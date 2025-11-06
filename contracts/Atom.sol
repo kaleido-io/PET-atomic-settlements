@@ -2,8 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
-import {ISwappableFheERC20} from "./interfaces/ISwappableFheERC20.sol";
-import {IZetoLockable} from "zeto-solidity/contracts/lib/interfaces/izeto_lockable.sol";
+import {IConfidentialBalanceCheck} from "./interfaces/IConfidentialBalanceCheck.sol";
+import {ILockable} from "zeto-solidity/contracts/lib/interfaces/ILockable.sol";
 
 contract Atom {
     using Address for address;
@@ -15,11 +15,8 @@ contract Atom {
     }
 
     struct Operation {
-        // TODO: once (if) we have figured out how to make a generic enough interface,
-        // this should just be the ILockable interface
-        address contractAddress;
+        ILockable lockableContract;
         bytes32 lockId;
-        bytes callData; // for the FHE ERC20 tokens, until we have a generic enough interface
     }
 
     struct OperationResult {
@@ -62,7 +59,7 @@ contract Atom {
     }
 
     function allowBalanceCheck(
-        ISwappableFheERC20 confidentialERC20,
+        IConfidentialBalanceCheck confidentialERC20,
         address spender
     ) external {
         confidentialERC20.allowBalanceCheck(spender);
@@ -79,19 +76,10 @@ contract Atom {
         status = Status.Executed;
 
         for (uint256 i = 0; i < _operations.length; i++) {
-            Operation storage op = _operations[i];
-            if (op.callData.length > 0) {
-                (bool success, bytes memory returnData) = op
-                    .contractAddress
-                    .call(op.callData);
-                OperationResult[] memory results = new OperationResult[](1);
-                results[0] = OperationResult(success, returnData);
-                if (!success) {
-                    revert ExecutionResult(results);
-                }
-            } else {
-                IZetoLockable(op.contractAddress).settleLock(op.lockId, "");
-            }
+            _operations[i].lockableContract.settleLock(
+                _operations[i].lockId,
+                ""
+            );
         }
         emit AtomStatusChanged(status);
     }
@@ -106,7 +94,10 @@ contract Atom {
         }
         status = Status.Cancelled;
         for (uint256 i = 0; i < _operations.length; i++) {
-            // TODO: should just call ILockable.refundLock(op.lockId)
+            _operations[i].lockableContract.refundLock(
+                _operations[i].lockId,
+                ""
+            );
         }
         emit AtomStatusChanged(status);
     }
