@@ -140,7 +140,7 @@ describe("DvP flows between FHE based ERC20 tokens and Zeto based fungible token
 
     it("Alice and Bob agrees on an Atom contract instance to use for the trade", async function () {
       const atomFactory = await ethers.getContractFactory("Atom");
-      atomInstance = await atomFactory.deploy();
+      atomInstance = await atomFactory.connect(Alice.signer).deploy();
       console.log("Atom contract instance deployed at", atomInstance.target);
     });
 
