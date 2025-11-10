@@ -1,6 +1,6 @@
-# Demonstrations of DvP patterns b/w Privacy Tokens
+# Demonstrations of Secure Atomic Patterns b/w Privacy Tokens
 
-This project demonstrates a number of DvP patterns for atomic settlement between transfers of privacy preserving tokens.
+This project demonstrates a number of atomic patterns for settlement between transfers of privacy preserving tokens.
 
 ## Different Designs of Pivacy Token implementations
 
