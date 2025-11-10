@@ -49,4 +49,15 @@ Examples includes:
 - Solana's [Confidential Transfer](https://www.solana-program.com/docs/confidential-balances), based on Pedersen commitments
 - Avalanche's [Encrypted ERC-20](https://github.com/ava-labs/EncryptedERC), based on a custom partially homomorphic encryption scheme
 
-## 
+## Atomic Settlements b/w Privacy Tokens
+
+To demonstrate atomic settlements among privacy tokens, exemplary token implementations are selected to represent the major design patterns in the current privacy enhancing tokens landscape, as described above. In particular, an implementation from the FHE based design was selected, Openzeppelin's Confidential ERC20, and an implementation from the commitment based design was selected, LFDT's Zeto token.
+
+Among the two tokens, 3 types of settlement flows can be implemented:
+
+- Confidential ERC20 vs. Confidential ERC20
+- Confidential ERC20 vs. Zeto
+- Zeto vs. Zeto
+
+The examples in this repository will demonstrate that a generic locking based settlement mechanism can be developed to support the major design patterns of privacy enhancing tokens, in multi-leg atomic settlement flows.
+
