@@ -261,7 +261,7 @@ sequenceDiagram
 
 To support this scenario:
 
-- The Escrow contract must allow a partially setup trade to be canceled, but only by the party who have so far made commitments.
+- The Escrow contract must allow a partially setup trade to be canceled, but only by the trade participants as designated by the list of Operations.
 
 ### Failure case #2 - a malicious party attempting to initialize with invalid Operations
 
