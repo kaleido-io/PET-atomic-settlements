@@ -149,9 +149,9 @@ Once all the approvals are given, `cancel()` should be disallowed, until the con
 
 On the other hand, any of the trading parties should be allowed to call `cancel()` on the orchestrator contract, before all the approvals are given. This prevents a malicious party from holding up the settlement by staying silent.
 
-### Successful Settlement Flow #1 - Confidential ERC20 vs. Confidential UTXO
+### Successful Settlement Flow
 
-The diagram below illustrates a full settlement flow that results in the successful settlement between two trading participants.
+The diagram below illustrates a full settlement flow that results in the successful settlement between two trading participants, one (Alice) using a Confidential UTXO token vs. and one (Bob) using a Confidential ERC20 token.
 
 ```mermaid
 sequenceDiagram
