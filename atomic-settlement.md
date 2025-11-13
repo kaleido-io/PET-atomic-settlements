@@ -1,5 +1,20 @@
 # Secure Multi-leg Atomic Settlements of Privacy Enhancing Tokens
 
+## Table of Contents
+
+- [The Privacy Enhancing Tokens Landscape](#the-privacy-enhancing-tokens-landscape)
+  - [Homomorphic Encryption based Tokens](#homomorphic-encryption-based-tokens)
+  - [Commitment based Tokens](#commitment-based-tokens)
+    - [Hash (non-homomorphic) based Commitments](#hash-non-homomorphic-based-commitments)
+    - [Homomorphic Commitments](#homomorphic-commitments)
+- [Atomic Settlements b/w Privacy Tokens](#atomic-settlements-bw-privacy-tokens)
+  - [Lock interfaces for the privacy tokens](#lock-interfaces-for-the-privacy-tokens)
+  - [Generic lock interface](#generic-lock-interface)
+  - [Settlement orchestration contract](#settlement-orchestration-contract)
+  - [Successful Settlement Flow #1 - Confidential ERC20 vs. Confidential UTXO](#successful-settlement-flow-1-confidential-erc20-vs-confidential-utxo)
+  - [Failure case #1 - counterparty fails to fulfill obligations during setup phase](#failure-case-1-counterparty-fails-to-fulfill-obligations-during-setup-phase)
+  - [Failure case #2 - a malicious party attempting to initialize with invalid Operations](#failure-case-2-a-malicious-party-attempting-to-initialize-with-invalid-operations)
+
 This document is a proposal of an ERC for performing multi-leg settlements among an arbitrary number of privacy enhancing tokens, in a secure and atomic manner.
 
 ## The Privacy Enhancing Tokens Landscape
@@ -63,7 +78,9 @@ Among the two tokens, 3 types of settlement flows can be implemented:
 - Confidential ERC20 vs. Zeto
 - Zeto vs. Zeto
 
-The examples in this repository will demonstrate that a generic locking based settlement mechanism can be developed to support the major design patterns of privacy enhancing tokens, in multi-leg atomic settlement flows.
+The examples in this repository will demonstrate that **_a generic locking based settlement mechanism_** can be developed to support the major design patterns of privacy enhancing tokens, in multi-leg atomic settlement flows.
+
+### Lock interfaces for the privacy tokens
 
 The repository contains the following smart contract interfaces that need to be implemented in the privacy token contract to make the settlement flow work:
 
@@ -101,7 +118,9 @@ There are slight differences in the function signature due to the different onch
 - The trade counterparty must be able to inspect the createLock transaction and verify that the `settle` operation represents the intended asset value and movement, as agreed upon. Given the confidential (and anonymous in the case of certain token implementations) nature of the token, the ability to fully verify may depend on secret sharing from the asset owner via out-of-band channels. This is dependent on the specific token implementation.
 - The `delegate` is the only party that can carry out the intended operations to settle, or to rollback either when the trade falls apart (one of the counterparties failed to fulfill their commitment), or when the settlement fails to execute. Typically the delegate should be a smart contract, with trusted processing logic to settle and to rollback.
 
-Both of the above interfaces extend the following generic lock interface, which is also used by the settlement orchestration contract to drive the settlement operations against the privacy tokens:
+### Generic lock interface
+
+Both of the above interfaces extend the following **_generic lock interface_**, which is also used by the settlement orchestration contract to drive the settlement operations against the privacy tokens:
 
 - `ILockable`: with a simple interface that provides two functions, `settleLock` and `rollbackLock`, to be called to either proceed with settlement or to rollback. Each operation uses the `lockId` to signal to the target privacy token contract the lock to operate on.
 
@@ -109,6 +128,10 @@ Both of the above interfaces extend the following generic lock interface, which 
 function settleLock(bytes32 lockId, bytes calldata data) external;
 function rollbackLock(bytes32 lockId, bytes calldata data) external;
 ```
+
+The above generic interface is expected to work with all privacy tokens that have implemented a lock interface to allow settle and rollback flow to be deterministically driven by a lock ID.
+
+### Settlement orchestration contract
 
 Finally, a settlement orchestration contract implementation, `Atom`, is provided. The Atom contract must be initialized once with all the legs of the settlement, with each leg represented by an `Operation` object.
 
