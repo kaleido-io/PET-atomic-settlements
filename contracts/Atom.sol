@@ -34,6 +34,17 @@ contract Atom is Ownable {
 
     event AtomStatusChanged(Status status);
     event OperationApproved(uint256 operationIndex);
+    event OperationSettled(uint256 operationIndex, bytes32 lockId, bytes data);
+    event OperationRolledBack(
+        uint256 operationIndex,
+        bytes32 lockId,
+        bytes data
+    );
+    event OperationRollbackFailed(
+        uint256 operationIndex,
+        bytes32 lockId,
+        bytes reason
+    );
     error AtomNotApproved();
     error NotApprover(address approver);
 
@@ -123,6 +134,7 @@ contract Atom is Ownable {
                 _operations[i].lockId,
                 ""
             );
+            emit OperationSettled(i, _operations[i].lockId, "");
         }
         emit AtomStatusChanged(status);
     }
@@ -132,15 +144,21 @@ contract Atom is Ownable {
      * Can only be done if the Atom is still pending.
      */
     function cancel() external onlyCounterparty {
-        if (status != Status.Approved) {
-            revert AtomNotApproved();
-        }
+        // should NOT require the status to be Approved, because we want to allow
+        //the counterparties to cancel the trade if others fail to approve, or
+        // fulfill their obligations by setting up the locks.
         status = Status.Cancelled;
         for (uint256 i = 0; i < _operations.length; i++) {
-            _operations[i].lockableContract.rollbackLock(
-                _operations[i].lockId,
-                ""
-            );
+            try
+                _operations[i].lockableContract.rollbackLock(
+                    _operations[i].lockId,
+                    ""
+                )
+            {
+                emit OperationRolledBack(i, _operations[i].lockId, "");
+            } catch (bytes memory reason) {
+                emit OperationRollbackFailed(i, _operations[i].lockId, reason);
+            }
         }
         emit AtomStatusChanged(status);
     }
