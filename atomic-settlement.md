@@ -253,8 +253,10 @@ sequenceDiagram
   rect rgba(191, 255, 197, 1)
     E->>A1: rollback lockId-1
     E->>A2: rollback lockId-2
+    E->>A3: rollback lockId-3
     A1->>A: unlock asset-1 tokens
     A2->>B: unlock asset-2 tokens
+    A3->>A3: revert
   end
   end
 ```
