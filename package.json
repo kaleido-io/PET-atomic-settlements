@@ -11,6 +11,7 @@
     "@openzeppelin/contracts": "^5.4.0",
     "@openzeppelin/contracts-upgradeable": "^5.4.0",
     "@openzeppelin/hardhat-upgrades": "^3.9.1",
+    "tslog": "^4.10.2",
     "zeto-js": "file:../zeto/zkp/js",
     "zeto-solidity": "file:../zeto/solidity"
   }

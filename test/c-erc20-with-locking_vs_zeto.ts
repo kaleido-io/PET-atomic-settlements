@@ -21,6 +21,9 @@ import { expect } from "chai";
 import { Merkletree, InMemoryDB, str2Bytes } from "@iden3/js-merkletree";
 import { loadCircuit, Poseidon } from "zeto-js";
 import { randomBytes } from "crypto";
+import { Logger, ILogObj } from "tslog";
+const logLevel = process.env.LOG_LEVEL || "3";
+export const logger: Logger<ILogObj> = new Logger({ name: "e2e", minLevel: parseInt(logLevel) });
 
 process.env.SKIP_ANON_TESTS = "true";
 process.env.SKIP_ANON_NULLIFIER_TESTS = "true";
@@ -46,8 +49,8 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
   let Bob: User; // the user who holds the FHE ERC20 tokens
 
   // instances of the contracts
-  let zkPayment: any;
-  let fheERC20: any;
+  let zkUTXO: any;
+  let confidentialERC20: any;
   let atomFactory: any;
 
   // Alice's payment UTXOs to be minted and transferred
@@ -76,8 +79,8 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
     smtAlice = new Merkletree(storage1, true, 64);
 
     // deploy the Zeto contract for the Zeto tokens
-    ({ zeto: zkPayment } = await deployZeto("Zeto_AnonNullifier"));
-    console.log(`ZK Payment contract deployed at ${zkPayment.target}`);
+    ({ zeto: zkUTXO } = await deployZeto("Zeto_AnonNullifier"));
+    logger.debug(`ZK Payment contract deployed at ${zkUTXO.target}`);
 
     // load the circuits for the Zeto tokens
     circuit = await loadCircuit("anon_nullifier_transfer");
@@ -91,22 +94,22 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
 
     // deploy the FHE ERC20 contract for the FHE ERC20 tokens
     const factory = await ethers.getContractFactory("FheERC20Lockable");
-    fheERC20 = await factory.connect(Deployer.signer).deploy();
-    console.log(`FHE ERC20 Lockable contract deployed at ${fheERC20.target}`);
+    confidentialERC20 = await factory.connect(Deployer.signer).deploy();
+    logger.debug(`FHE ERC20 Lockable contract deployed at ${confidentialERC20.target}`);
 
     const afFactory = await ethers.getContractFactory("AtomFactory");
     atomFactory = await afFactory.connect(Alice.signer).deploy();
-    console.log("AtomFactory contract instance deployed at", atomFactory.target);
+    logger.debug("AtomFactory contract instance deployed at", atomFactory.target);
   });
 
-  it("mint to Alice some payment tokens in Zeto", async function () {
+  it("mint to Alice some \"Confidential UTXO\" tokens", async function () {
     payment1 = newUTXO(100, Alice);
     payment2 = newUTXO(200, Alice);
-    const result = await doMint(zkPayment, Deployer.signer, [payment1, payment2]);
+    const result = await doMint(zkUTXO, Deployer.signer, [payment1, payment2]);
 
     // simulate Alice listening to minting events and updating her local merkle tree
     for (const log of result.logs) {
-      const event = zkPayment.interface.parseLog(log as any);
+      const event = zkUTXO.interface.parseLog(log as any);
       expect(event.args.outputs.length).to.equal(2);
       const utxos = event.args.outputs;
       await smtAlice.add(utxos[0], utxos[0]);
@@ -114,64 +117,67 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
     }
 
     let root = await smtAlice.root();
-    let onchainRoot = await zkPayment.getRoot();
+    let onchainRoot = await zkUTXO.getRoot();
     expect(root.string()).to.equal(onchainRoot.toString());
   });
 
-  it("mint to Bob some FHE ERC20 tokens", async function () {
+  it("mint to Bob some \"Lockable Confidential ERC20\" tokens", async function () {
     const encryptedInput = await fhevm
-      .createEncryptedInput(fheERC20.target, Deployer.ethAddress)
+      .createEncryptedInput(confidentialERC20.target, Deployer.ethAddress)
       .add64(1000)
       .encrypt();
 
-    const tx = await fheERC20.connect(Deployer.signer).mint(Bob.ethAddress, encryptedInput.handles[0], encryptedInput.inputProof);
+    const tx = await confidentialERC20.connect(Deployer.signer).mint(Bob.ethAddress, encryptedInput.handles[0], encryptedInput.inputProof);
     await tx.wait();
 
     // check the balance of Bob in the FHE ERC20 contract
-    const balance = await fheERC20.confidentialBalanceOf(Bob.signer);
+    const balance = await confidentialERC20.confidentialBalanceOf(Bob.signer);
     await expect(
-      fhevm.userDecryptEuint(FhevmType.euint64, balance, fheERC20.target, Bob.signer),
+      fhevm.userDecryptEuint(FhevmType.euint64, balance, confidentialERC20.target, Bob.signer),
     ).to.eventually.equal(1000);
   });
 
-  describe("Successful end to end trade flow between Alice (using Zeto tokens) and Bob (using FHE ERC20 tokens)", function () {
+  describe("Successful end to end trade flow between Alice (using \"Confidential UTXO\" tokens) and Bob (using \"Lockable Confidential ERC20\" tokens)", function () {
     let lockedUtxo: UTXO;
     let lockIdAlice: string;
     let lockIdBob: string;
-    let lockEventBob: any;
 
     let atomInstance: any;
 
     describe("Trade proposal setup by Alice and Bob", function () {
       let saltForProposedPaymentForBob: bigint;
-      let lockCreateEvent: any;
+      let lockUTXOEvent: any;
+      let lockERC20Event: any;
 
-      it("Alice and Bob agree on an Atom contract instance to use for the trade", async function () {
+      it("Alice and Bob agree on an Atom contract instance to use for the trade, and initialize the lock IDs", async function () {
         // generate random lockId for Alice's lock
         lockIdAlice = "0x" + randomBytes(32).toString("hex");
         // generate random lockId for Bob's lock
         lockIdBob = "0x" + randomBytes(32).toString("hex");
 
         const operationAlice = {
-          lockableContract: zkPayment,
+          lockableContract: zkUTXO,
           approver: Alice.ethAddress,
           lockId: lockIdAlice,
         };
         const operationBob = {
-          lockableContract: fheERC20,
+          lockableContract: confidentialERC20,
           approver: Bob.ethAddress,
           lockId: lockIdBob,
         };
+        // deploy the Atom contract and initialize it with the operations
+        // at this point, the lock IDs are fixed by the Atom contract, 
+        // but they are not yet locked in the token contracts
         const tx = await atomFactory.connect(Alice.signer).create([operationAlice, operationBob]);
         const result: ContractTransactionReceipt | null = await tx.wait();
         const atomDeployedEvent = parseLockEvents(atomFactory, result!)[0];
         const instance = atomDeployedEvent?.atomInstance;
         atomInstance = await ethers.getContractAt("Atom", instance);
-        console.log("Atom contract instance deployed at", atomInstance.target);
+        logger.debug("Atom contract instance deployed at", atomInstance.target);
       });
 
-      it("Alice uses the lock ID in the Atom contract to lock a UTXO for the trade with Bob", async function () {
-        // Alice consumes a Zeto token and locks it
+      it("Alice uses the lock ID in the Atom contract initialization to lock a UTXO for the trade with Bob", async function () {
+        // Alice consumes a "Confidential UTXO" token and locks it
         const nullifier1 = newNullifier(payment1, Alice);
         // The locked UTXO is owned by Alice, who is responsible for generating the proof
         // and giving it to the Atom contract as the delegate.
@@ -186,6 +192,8 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           proof1.siblings.map((s) => s.bigInt()),
           proof2.siblings.map((s) => s.bigInt()),
         ];
+        // generate the proof for spending the "payment1" UTXO
+        // and locking the "lockedUtxo" output UTXO
         const encodedProof = await prepareProof(
           circuit,
           provingKey,
@@ -198,6 +206,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           [Alice, Alice],
         );
 
+        // Now construct the "settle" and "rollback" operations for the lock
         const lockParameters = {
           inputs: [nullifier1.hash],
           outputs: [],
@@ -212,8 +221,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           Alice,
           [lockedUtxo, ZERO_UTXO],
           [paymentForBob, changeForAlice],
-          [Bob, Alice],
-          atomInstance.target, // the Atom contract will be the delegate
+          [Bob, Alice]
         );
         const settleOperation = {
           outputStates: {
@@ -223,6 +231,8 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           proof: encodeToBytesLocked(encodedProofForSettle),
           data: "0x",
         }
+        // skip the refund operation for now, as we are not using it in this test
+        // but see the failing trade flow test below for an example of how to use it
         const refundOperation = {
           outputStates: {
             outputs: [],
@@ -231,24 +241,24 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           proof: "0x",
           data: "0x",
         }
-        const tx = await zkPayment.connect(Alice.signer).createLock(
+        const tx = await zkUTXO.connect(Alice.signer).createLock(
           lockIdAlice,
           lockParameters,
           encodeToBytes(root.bigInt(), encodedProof), // encode the root and proof together
-          atomInstance.target,
+          atomInstance.target, // the Atom contract will be the lock delegate
           settleOperation,
           refundOperation,
           "0x",
         );
         const result: ContractTransactionReceipt | null = await tx.wait();
-        lockCreateEvent = parseLockEvents(zkPayment, result!)[0];
+        lockUTXOEvent = parseLockEvents(zkUTXO, result!)[0];
       });
 
-      it("Bob decodes the LockCommit event, decodes the lock operation parameters, and verifies the output UTXOs", async function () {
+      it("Bob decodes the LockCreate event, decodes the lock operation parameters, and verifies the output UTXOs", async function () {
         // check that the lockId in the event is the same as the lockId used in the operation for Alice's lock
-        expect(lockCreateEvent.lockId).to.equal(lockIdAlice);
-        // Bob decodes the LockCommit event...
-        const lockData = lockCreateEvent.lockData;
+        expect(lockUTXOEvent.lockId).to.equal(lockIdAlice);
+        // Bob decodes the LockCreate event...
+        const lockData = lockUTXOEvent.lockData;
         // check that the lock will produce the output UTXO to be owned by Bob upon settlement
         const expectedHashForProposedPaymentForBob = getUTXOHash(BigInt(75), saltForProposedPaymentForBob, Bob);
         expect(lockData.settle.outputStates.outputs[0]).to.equal(expectedHashForProposedPaymentForBob);
@@ -256,28 +266,32 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         expect(lockData.delegate).to.equal(atomInstance.target);
       });
 
-      it("Bob agrees with the trade proposal by Alice, and locks 50 of his FHE ERC20 tokens", async function () {
+      it("Bob agrees with the trade proposal by Alice, and locks 50 of his \"Lockable Confidential ERC20\" tokens", async function () {
         // Bob locks 50 of his FHE ERC20 tokens, designating the Atom contract as the delegate
         const encryptedInput = await fhevm
-          .createEncryptedInput(fheERC20.target, Bob.ethAddress)
+          .createEncryptedInput(confidentialERC20.target, Bob.ethAddress)
           .add64(50)
           .encrypt();
 
-        const tx1 = await fheERC20.connect(Bob.signer).createLock(lockIdBob, Alice.ethAddress, atomInstance.target, encryptedInput.handles[0], encryptedInput.inputProof, "0x");
+        const tx1 = await confidentialERC20.connect(Bob.signer).createLock(lockIdBob, Alice.ethAddress, atomInstance.target, encryptedInput.handles[0], encryptedInput.inputProof, "0x");
         const result: ContractTransactionReceipt | null = await tx1.wait();
 
-        lockEventBob = parseLockEvents(fheERC20, result!)[0];
-        expect(lockEventBob.lockId).to.equal(lockIdBob);
-        expect(lockEventBob.delegate).to.equal(atomInstance.target);
+        lockERC20Event = parseLockEvents(confidentialERC20, result!)[0];
       });
 
-      it("Alice verifies the trade proposal response from Bob, by checking the encrypted amount in the LockCreated event", async function () {
-        // Alice verifies the trade proposal
-        const lockedAmount = lockEventBob.amount;
-        const decryptedLockedAmount = await fhevm.userDecryptEuint(FhevmType.euint64, lockedAmount, fheERC20.target, Alice.signer);
+      it("Alice verifies the trade setup by Bob, by checking the lock events emitted by the Confidential ERC20 contract", async function () {
+        // check that the lockId in the event is the same as the lockId used in the operation for Bob's lock
+        expect(lockERC20Event.lockId).to.equal(lockIdBob);
+        // check that the lock is delegated to the Atom contract
+        expect(lockERC20Event.delegate).to.equal(atomInstance.target);
+        // check the encrypted amount in the LockCreated event
+        const lockedAmount = lockERC20Event.amount;
+        const decryptedLockedAmount = await fhevm.userDecryptEuint(FhevmType.euint64, lockedAmount, confidentialERC20.target, Alice.signer);
         expect(decryptedLockedAmount).to.equal(50);
-        expect(lockEventBob.owner).to.equal(Bob.ethAddress);
-        expect(lockEventBob.receiver).to.equal(Alice.ethAddress);
+        // check that the lock is owned by Bob
+        expect(lockERC20Event.owner).to.equal(Bob.ethAddress);
+        // check that the lock designates Alice as the receiver
+        expect(lockERC20Event.receiver).to.equal(Alice.ethAddress);
       });
     });
 
@@ -295,13 +309,13 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
     describe("Trade execution", function () {
       it("One of Alice or Bob executes the Atom contract to complete the trade", async function () {
         // check the balance of Alice. it should be 0
-        const balanceAliceBefore = await fheERC20.confidentialBalanceOf(Alice.signer);
+        const balanceAliceBefore = await confidentialERC20.confidentialBalanceOf(Alice.signer);
         expect(balanceAliceBefore).to.equal(ZeroHash);
 
         // check the balance of Bob. it should be 950 because Bob locked 50 of his FHE ERC20 tokens
-        const balanceBobBefore = await fheERC20.confidentialBalanceOf(Bob.signer);
+        const balanceBobBefore = await confidentialERC20.confidentialBalanceOf(Bob.signer);
         await expect(
-          fhevm.userDecryptEuint(FhevmType.euint64, balanceBobBefore, fheERC20.target, Bob.signer),
+          fhevm.userDecryptEuint(FhevmType.euint64, balanceBobBefore, confidentialERC20.target, Bob.signer),
         ).to.eventually.equal(950);
 
         if (Math.random() < 0.5) {
@@ -313,15 +327,15 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         }
 
         // check the balance of Alice. it should be 50 because Alice received 50 of Bob's FHE ERC20 tokens
-        const balanceAliceAfter = await fheERC20.confidentialBalanceOf(Alice.signer);
+        const balanceAliceAfter = await confidentialERC20.confidentialBalanceOf(Alice.signer);
         await expect(
-          fhevm.userDecryptEuint(FhevmType.euint64, balanceAliceAfter, fheERC20.target, Alice.signer),
+          fhevm.userDecryptEuint(FhevmType.euint64, balanceAliceAfter, confidentialERC20.target, Alice.signer),
         ).to.eventually.equal(50);
 
         // check the balance of Bob. it should be 950 because Bob transferred 50 of his FHE ERC20 tokens to Alice
-        const balanceBobAfter = await fheERC20.confidentialBalanceOf(Bob.signer);
+        const balanceBobAfter = await confidentialERC20.confidentialBalanceOf(Bob.signer);
         await expect(
-          fhevm.userDecryptEuint(FhevmType.euint64, balanceBobAfter, fheERC20.target, Bob.signer),
+          fhevm.userDecryptEuint(FhevmType.euint64, balanceBobAfter, confidentialERC20.target, Bob.signer),
         ).to.eventually.equal(950);
       });
     });
@@ -338,25 +352,25 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
     before(async function () {
       const afFactory = await ethers.getContractFactory("AtomFactory");
       atomFactory = await afFactory.connect(Alice.signer).deploy();
-      console.log("AtomFactory contract instance deployed at", atomFactory.target);
+      logger.debug("AtomFactory contract instance deployed at", atomFactory.target);
     });
 
     describe("Trade proposal setup by Alice", function () {
       let cancelTxResult: any;
 
-      it("Alice and Bob agree on an Atom contract instance to use for the trade", async function () {
+      it("Alice and Bob agree on an Atom contract instance to use for the trade, and initialize the lock IDs", async function () {
         // generate random lockId for Alice's lock
         lockIdAlice = "0x" + randomBytes(32).toString("hex");
         // generate random lockId for Bob's lock
         lockIdBob = "0x" + randomBytes(32).toString("hex");
 
         const operationAlice = {
-          lockableContract: zkPayment,
+          lockableContract: zkUTXO,
           approver: Alice.ethAddress,
           lockId: lockIdAlice,
         };
         const operationBob = {
-          lockableContract: fheERC20,
+          lockableContract: confidentialERC20,
           approver: Bob.ethAddress,
           lockId: lockIdBob,
         };
@@ -365,7 +379,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         const atomDeployedEvent = parseLockEvents(atomFactory, result!)[0];
         const instance = atomDeployedEvent?.atomInstance;
         atomInstance = await ethers.getContractAt("Atom", instance);
-        console.log("Atom contract instance deployed at", atomInstance.target);
+        logger.debug("Atom contract instance deployed at", atomInstance.target);
       });
 
       it("Alice uses the lock ID in the Atom contract to lock a UTXO for the trade with Bob", async function () {
@@ -423,7 +437,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           proof: encodeToBytesLocked(encodedProofForSettle),
           data: "0x",
         }
-        // prepare the refund operation:
+        // prepare the "rollback" operation:
         // - refund the locked UTXO to Alice
         // - no locked UTXOs
         refundForAlice = newUTXO(lockedUtxo.value!, Alice);
@@ -434,7 +448,6 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           [lockedUtxo, ZERO_UTXO],
           [refundForAlice, ZERO_UTXO],
           [Alice, Alice],
-          atomInstance.target, // the Atom contract will be the delegate
         );
         const refundOperation = {
           outputStates: {
@@ -444,7 +457,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           proof: encodeToBytesLocked(encodedProofForRollback),
           data: "0x",
         }
-        const tx = await zkPayment.connect(Alice.signer).createLock(
+        const tx = await zkUTXO.connect(Alice.signer).createLock(
           lockIdAlice,
           lockParameters,
           encodeToBytes(root.bigInt(), encodedProof), // encode the root and proof together
@@ -476,7 +489,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
 
       it("Alice verifies the trade cancellation by checking the UTXO events emitted by the Zeto contract", async function () {
         // verify the UTXO events, showing the locked UTXO was returned to Alice
-        const events = parseUTXOEvents(zkPayment, cancelTxResult!);
+        const events = parseUTXOEvents(zkUTXO, cancelTxResult!);
         const rollbackEvent = events[0];
         expect(rollbackEvent).to.not.be.null;
         expect(rollbackEvent?.lockId).to.equal(lockIdAlice);
