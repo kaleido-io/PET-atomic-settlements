@@ -16,7 +16,7 @@
 
 import { ethers, fhevm, network } from "hardhat";
 import { FhevmType } from '@fhevm/hardhat-plugin';
-import { ContractTransactionReceipt, ZeroHash } from "ethers";
+import { ContractTransactionReceipt, ZeroHash, ZeroAddress } from "ethers";
 import { expect } from "chai";
 import { Merkletree, InMemoryDB, str2Bytes } from "@iden3/js-merkletree";
 import { loadCircuit } from "zeto-js";
@@ -150,34 +150,9 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
       let lockUTXOEvent: any;
       let lockERC20Event: any;
 
-      it("Alice and Bob agree on an Atom contract instance to use for the trade, and initialize the lock IDs", async function () {
+      it("Alice uses the lock ID in the Atom contract initialization to lock a UTXO for the trade with Bob", async function () {
         // generate random lockId for Alice's lock
         lockIdAlice = "0x" + randomBytes(32).toString("hex");
-        // generate random lockId for Bob's lock
-        lockIdBob = "0x" + randomBytes(32).toString("hex");
-
-        const operationAlice = {
-          lockableContract: zkUTXO,
-          approver: Alice.ethAddress,
-          lockId: lockIdAlice,
-        };
-        const operationBob = {
-          lockableContract: confidentialERC20,
-          approver: Bob.ethAddress,
-          lockId: lockIdBob,
-        };
-        // deploy the Atom contract and initialize it with the operations
-        // at this point, the lock IDs are fixed by the Atom contract, 
-        // but they are not yet locked in the token contracts
-        const tx = await atomFactory.connect(Alice.signer).create([operationAlice, operationBob]);
-        const result: ContractTransactionReceipt | null = await tx.wait();
-        const atomDeployedEvent = parseLockEvents(atomFactory, result!)[0];
-        const instance = atomDeployedEvent?.atomInstance;
-        atomInstance = await ethers.getContractAt("Atom", instance);
-        logger.debug("Atom contract instance deployed at", atomInstance.target);
-      });
-
-      it("Alice uses the lock ID in the Atom contract initialization to lock a UTXO for the trade with Bob", async function () {
         // Alice consumes a "Confidential UTXO" token and locks it
         const nullifier1 = newNullifier(payment1, Alice);
         // The locked UTXO is owned by Alice, who is responsible for generating the proof
@@ -242,11 +217,14 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           proof: "0x",
           data: "0x",
         }
+        // set the delegate to Alice herself initially, this way Alice
+        // can recover the locked tokens if Bob fails to fulfill his obligations.
+        const delegate = Alice.ethAddress;
         const tx = await zkUTXO.connect(Alice.signer).createLock(
           lockIdAlice,
           lockParameters,
           encodeToBytes(root.bigInt(), encodedProof), // encode the root and proof together
-          atomInstance.target, // the Atom contract will be the lock delegate
+          delegate,
           settleOperation,
           refundOperation,
           "0x",
@@ -263,18 +241,21 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         // check that the lock will produce the output UTXO to be owned by Bob upon settlement
         const expectedHashForProposedPaymentForBob = getUTXOHash(BigInt(75), saltForProposedPaymentForBob, Bob);
         expect(lockData.settle.outputStates.outputs[0]).to.equal(expectedHashForProposedPaymentForBob);
-        // check that the lock is delegated to the Atom contract
-        expect(lockData.delegate).to.equal(atomInstance.target);
       });
 
       it("Bob agrees with the trade proposal by Alice, and locks 50 of his \"Lockable Confidential ERC20\" tokens", async function () {
+        // generate random lockId for Bob's lock
+        lockIdBob = "0x" + randomBytes(32).toString("hex");
         // Bob locks 50 of his FHE ERC20 tokens, designating the Atom contract as the delegate
         const encryptedInput = await fhevm
           .createEncryptedInput(confidentialERC20.target, Bob.ethAddress)
           .add64(50)
           .encrypt();
 
-        const tx1 = await confidentialERC20.connect(Bob.signer).createLock(lockIdBob, Alice.ethAddress, atomInstance.target, encryptedInput.handles[0], encryptedInput.inputProof, "0x");
+        // set the delegate to Bob himself initially, this way Bob
+        // can recover the locked tokens if Alice fails to fulfill her obligations.
+        const delegate = Bob.ethAddress;
+        const tx1 = await confidentialERC20.connect(Bob.signer).createLock(lockIdBob, Alice.ethAddress, delegate, encryptedInput.handles[0], encryptedInput.inputProof, "0x");
         const result: ContractTransactionReceipt | null = await tx1.wait();
 
         lockERC20Event = parseLockEvents(confidentialERC20, result!)[0];
@@ -283,8 +264,6 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
       it("Alice verifies the trade setup by Bob, by checking the lock events emitted by the Confidential ERC20 contract", async function () {
         // check that the lockId in the event is the same as the lockId used in the operation for Bob's lock
         expect(lockERC20Event.lockId).to.equal(lockIdBob);
-        // check that the lock is delegated to the Atom contract
-        expect(lockERC20Event.delegate).to.equal(atomInstance.target);
         // check the encrypted amount in the LockCreated event
         const lockedAmount = lockERC20Event.amount;
         const decryptedLockedAmount = await fhevm.userDecryptEuint(FhevmType.euint64, lockedAmount, confidentialERC20.target, Alice.signer);
@@ -294,15 +273,37 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         // check that the lock designates Alice as the receiver
         expect(lockERC20Event.receiver).to.equal(Alice.ethAddress);
       });
+
+      it("Alice and Bob agree on an Atom contract instance to use for the trade, and initialize the lock operations", async function () {
+        const operationAlice = {
+          lockableContract: zkUTXO,
+          approver: Alice.ethAddress,
+          lockId: lockIdAlice,
+        };
+        const operationBob = {
+          lockableContract: confidentialERC20,
+          approver: Bob.ethAddress,
+          lockId: lockIdBob,
+        };
+        // deploy the Atom contract and initialize it with the operations
+        // at this point, the lock IDs are fixed by the Atom contract, 
+        // but they are not yet locked in the token contracts
+        const tx = await atomFactory.connect(Alice.signer).create([operationAlice, operationBob]);
+        const result: ContractTransactionReceipt | null = await tx.wait();
+        const atomDeployedEvent = parseLockEvents(atomFactory, result!)[0];
+        const instance = atomDeployedEvent?.atomInstance;
+        atomInstance = await ethers.getContractAt("Atom", instance);
+        logger.debug("Atom contract instance deployed at", atomInstance.target);
+      });
     });
 
     describe("Trade approvals", function () {
-      it("Bob approves the trade by approving the lock operation", async function () {
-        const tx = await atomInstance.connect(Bob.signer).approveOperation(1);
+      it("Bob approves the trade by delegating the lock operation to the Atom contract", async function () {
+        const tx = await confidentialERC20.connect(Bob.signer).delegateLock(lockIdBob, atomInstance.target, "0x");
         await tx.wait();
       });
-      it("Alice approves the trade by approving the lock operation", async function () {
-        const tx = await atomInstance.connect(Alice.signer).approveOperation(0);
+      it("Alice approves the trade by delegating the lock operation to the Atom contract", async function () {
+        const tx = await zkUTXO.connect(Alice.signer).delegateLock(lockIdAlice, atomInstance.target, "0x");
         await tx.wait();
       });
     });
@@ -319,13 +320,28 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           fhevm.userDecryptEuint(FhevmType.euint64, balanceBobBefore, confidentialERC20.target, Bob.signer),
         ).to.eventually.equal(950);
 
+        let settleTxResult: any;
         if (Math.random() < 0.5) {
           const tx = await atomInstance.connect(Alice.signer).settle();
-          await tx.wait();
+          settleTxResult = await tx.wait();
         } else {
           const tx = await atomInstance.connect(Bob.signer).settle();
-          await tx.wait();
+          settleTxResult = await tx.wait();
         }
+
+        // verify the settle operation successfully executed by checking the events
+        // emitted by the Atom contract
+        const events = parseLockEvents(atomInstance, settleTxResult!);
+        const settledEvent1 = events[0];
+        expect(settledEvent1).to.not.be.null;
+        expect(settledEvent1?.operationIndex).to.equal(0);
+        expect(settledEvent1?.lockId).to.equal(lockIdAlice);
+        expect(settledEvent1?.data).to.equal("0x");
+        const settledEvent2 = events[1];
+        expect(settledEvent2).to.not.be.null;
+        expect(settledEvent2?.operationIndex).to.equal(1);
+        expect(settledEvent2?.lockId).to.equal(lockIdBob);
+        expect(settledEvent2?.data).to.equal("0x");
 
         // check the balance of Alice. it should be 50 because Alice received 50 of Bob's FHE ERC20 tokens
         const balanceAliceAfter = await confidentialERC20.confidentialBalanceOf(Alice.signer);
@@ -508,9 +524,11 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         expect(rollbackFailedEvent).to.not.be.null;
         expect(rollbackFailedEvent?.operationIndex).to.equal(1);
         expect(rollbackFailedEvent?.lockId).to.equal(lockIdBob);
-        expect(rollbackFailedEvent?.reason).to.include("0x08c379a0");
-        const reason = ethers.AbiCoder.defaultAbiCoder().decode(["string"], "0x" + rollbackFailedEvent?.reason.slice(10));
-        expect(reason[0]).to.equal("Only the delegate of the lock can refund it");
+        expect(rollbackFailedEvent?.reason).to.include("0x733b458b");
+        const reason = ethers.AbiCoder.defaultAbiCoder().decode(["bytes32", "address", "address"], "0x" + rollbackFailedEvent?.reason.slice(10));
+        expect(reason[0]).to.equal(lockIdBob);
+        expect(reason[1]).to.equal(ZeroAddress);
+        expect(reason[2]).to.equal(atomInstance.target);
       });
     });
   });
