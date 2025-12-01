@@ -10,6 +10,12 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
     mapping(bytes32 => Lock) private _locks;
     mapping(address => euint64) private _lockedBalances;
 
+    error NotLockDelegate(
+        bytes32 lockId,
+        address expectedDelegate,
+        address sender
+    );
+
     function createLock(
         bytes32 lockId,
         address receiver,
@@ -45,10 +51,9 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
 
     function settleLock(bytes32 lockId, bytes calldata data) public {
         Lock memory lock = _locks[lockId];
-        require(
-            lock.delegate == msg.sender,
-            "Only the delegate of the lock can settle it"
-        );
+        if (lock.delegate != msg.sender) {
+            revert NotLockDelegate(lockId, lock.delegate, msg.sender);
+        }
 
         euint64 transferred = _transferFromAsTrustedOperator(
             address(this),
@@ -74,10 +79,9 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
 
     function rollbackLock(bytes32 lockId, bytes calldata data) public {
         Lock memory lock = _locks[lockId];
-        require(
-            lock.delegate == msg.sender,
-            "Only the delegate of the lock can refund it"
-        );
+        if (lock.delegate != msg.sender) {
+            revert NotLockDelegate(lockId, lock.delegate, msg.sender);
+        }
         euint64 transferred = _transfer(
             address(this),
             lock.owner, // for refund, the owner is the recipient of the locked tokens
@@ -107,11 +111,12 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
         bytes calldata data
     ) public {
         Lock memory lock = _locks[lockId];
-        require(
-            lock.delegate == msg.sender,
-            "Only the delegate of the lock can delegate it"
-        );
+        if (lock.delegate != msg.sender) {
+            revert NotLockDelegate(lockId, lock.delegate, msg.sender);
+        }
         lock.delegate = newDelegate;
+        _locks[lockId] = lock;
+        FHE.allow(lock.amount, newDelegate);
         emit LockDelegated(lockId, lock.delegate, newDelegate, data);
     }
 
