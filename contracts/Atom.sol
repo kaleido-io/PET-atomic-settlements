@@ -5,6 +5,8 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ILockable} from "zeto-solidity/contracts/lib/interfaces/ILockable.sol";
 
+// Atom is a contract that orchestrates atomic settlements of multiple legs of a trade,
+// among privacy preserving tokens that implement the ILockable interface.
 contract Atom is Ownable {
     using Address for address;
 
@@ -133,8 +135,8 @@ contract Atom is Ownable {
      */
     function cancel() external onlyCounterparty {
         // should NOT require the status to be Approved, because we want to allow
-        //the counterparties to cancel the trade if others fail to approve, or
-        // fulfill their obligations by setting up the locks.
+        // the counterparties to cancel the trade if others fail to approve, or
+        // failed to fulfill their obligations to set up the locks.
         status = Status.Cancelled;
         for (uint256 i = 0; i < _operations.length; i++) {
             try
