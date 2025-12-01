@@ -68,7 +68,44 @@ Examples include:
 - Solana's [Confidential Transfer](https://www.solana-program.com/docs/confidential-balances), based on Pedersen commitments
 - Avalanche's [Encrypted ERC-20](https://github.com/ava-labs/EncryptedERC), based on a custom partially homomorphic encryption scheme
 
-## Atomic Settlements Between Privacy Tokens
+## Atomic Settlements Between Privacy Tokens - Protocol Design
+
+To properly design the protocol that meets security requirements, we use the model from the well-known paper [_Atomic Cross-Chain Swaps_](https://arxiv.org/pdf/1801.09515). Even though the model was created for cross-chain swap protocols, the same model can be applied to same-chain swap protocols discussed here.
+
+The protocol's possible outcomes are illustrated below:
+
+<img src="./resources/protocol-outcomes.jpg" width=400>
+
+- Deal: The party swaps assets as expected. This is the most desired outcome (for all parties that intend to conform to the protocol).
+- NoDeal: No assets change hands.
+- FreeRide: The party acquires assets without paying.
+- Discount: The party acquires assets while paying less than expected.
+- Underwater: The party pays without acquiring all expected assets.
+
+We want to design the protocol so that unacceptable outcomes, where any party is left underwater, should not be possible.
+
+A core part of our design is an orchestrator contract that guarantees the outcomes of the flows by deterministically codifying the various scenarios for both **Deal** and **NoDeal**.
+
+In almost all cases, FreeRide or Discount outcomes are only possible for some parties with other parties suffering Underwater outcomes, so the protocol should not support either of these outcomes.
+
+An important observation is that the hash locks are not needed in the same-chain settlements we are focusing on here. The hashlocks are proposed in the paper above as the synchronous coordination mechanism due to the lack of single-chain atomic execution guarantee.
+
+The time lock proposed in the paper serves the purpose of providing an exception mechanism in the case of "disappearing counterparty", to prevent a party's locked asset from being stuck indefinitely if the counterparty failed to fulfill their protocol responsibilities. The "disappearing counterparty" risk still exists in the same-chain protocol, but whether the time lock is needed or not depends on if the protocol requires a multi-step process that creates inter-counterparty dependencies (Alice locks her asset, and _requires_ Bob to do something to execute or refund).
+
+A high level protocol illustration:
+
+![protocol phases](./resources/protocol-phases.jpg)
+
+- The protocol has two phases: preparation and execution
+- Preparation: each party presents their trade proposal by locking up assets and verifying the counterparty's locked assets. During this phase, each party is free to back up from the trade by unblocking the assets and get the refund
+- To transition to the next phase, the trading parties must prepare their operations to use to initialize the settlement contract, and signal their final approvals by moving the lock delegate to the settlement contract (so that only the settlement contract can unlock the assets)
+- Execution: once in this phase, no trading parties can unilaterally walk away from the trade any longer. To unlock the assets for settlement or rollback, the settlement contract must call the asset token contract as the current lock delegate.
+
+Below is a more detailed illustration of the steps involved in the protocol:
+
+![protocol steps](./resources/protocol-steps.jpg)
+
+## Atomic Settlements Between Privacy Tokens - demonstrations
 
 To demonstrate atomic settlements among privacy tokens, exemplary token implementations are selected to represent the major design patterns in the current privacy-enhancing tokens landscape, as described above. In particular, an implementation from the FHE-based design was selected—OpenZeppelin's Confidential ERC20—and an implementation from the commitment-based design was selected—LFDT's Zeto token.
 

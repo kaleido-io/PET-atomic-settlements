@@ -49,6 +49,38 @@ The following test illustrates a rollback scenario when one of the trading parti
         ✔ In the meantime, the other rollback operation has reverted
 ```
 
+### Base Confidential ERC20 tokens vs. Confidential UTXO tokens
+
+In [test/c-erc20_vs_zeto.ts](./test/c-erc20_vs_zeto.ts).
+
+This example illustrates how secure atomic settlements should be implemented between a base IERC7984 implementation, like [the one by OpenZeppelin](https://github.com/OpenZeppelin/openzeppelin-confidential-contracts/tree/master/contracts/token/ERC7984), and confidential UTXO tokens that implement the lock interface.
+
+The base ERC7984 implementation is updated by implementing a small interface:
+
+```solidity
+interface IConfidentialBalanceCheck {
+    function allowBalanceCheck(address spender) external;
+}
+```
+
+```console
+  DvP flows between a vanilla Confidential ERC20 tokens and a Confidential UTXO token
+    ✔ mint to Alice some payment tokens in Confidential UTXO
+    ✔ mint to Bob some Confidential ERC20 tokens
+    Successful trade flow between Alice (using Confidential UTXO tokens) and Bob (using Confidential ERC20 tokens)
+      Trade proposal setup by Alice and Bob
+        ✔ Alice and Bob agrees on an Atom contract instance to use for the trade
+        ✔ Alice locks a UTXO to initiate a trade with Bob (3499ms)
+        ✔ Bob decodes the LockCreate event, decodes the lock operation parameters, and verifies the output UTXOs
+        ✔ Bob transfers 50 of his FHE ERC20 tokens to the Atom contract & approves Alice to access the encrypted amount
+        ✔ Alice verifies the trade proposal response from Bob, by checking the balance of the Atom contract in the FHE ERC20 contract
+      Trade approvals
+        ✔ Alice approves the trade
+        ✔ Bob approves the trade
+      Trade execution
+        ✔ One of Alice or Bob executes the Atom contract to complete the trade (70ms)
+```
+
 ### Vanilla ERC20 tokens vs Confidential UTXO tokens
 
 _To be added..._
