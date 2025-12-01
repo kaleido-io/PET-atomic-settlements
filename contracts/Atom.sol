@@ -12,7 +12,6 @@ contract Atom is Ownable {
 
     enum Status {
         Pending,
-        Approved,
         Executed,
         Cancelled
     }
@@ -34,8 +33,12 @@ contract Atom is Ownable {
     }
 
     event AtomStatusChanged(Status status);
-    event OperationApproved(uint256 operationIndex);
     event OperationSettled(uint256 operationIndex, bytes32 lockId, bytes data);
+    event OperationSettleFailed(
+        uint256 operationIndex,
+        bytes32 lockId,
+        bytes reason
+    );
     event OperationRolledBack(
         uint256 operationIndex,
         bytes32 lockId,
@@ -46,8 +49,7 @@ contract Atom is Ownable {
         bytes32 lockId,
         bytes reason
     );
-    error AtomNotApproved();
-    error NotApprover(address approver);
+    error NotCounterparty(address party);
 
     Status public status;
     bool private _initialized;
@@ -73,7 +75,7 @@ contract Atom is Ownable {
                 return;
             }
         }
-        revert NotApprover(msg.sender);
+        revert NotCounterparty(msg.sender);
     }
 
     /**
@@ -95,36 +97,24 @@ contract Atom is Ownable {
         emit AtomStatusChanged(status);
     }
 
-    function approveOperation(
-        uint256 operationIndex
-    ) external onlyCounterparty {
-        require(
-            _operations[operationIndex].approver == msg.sender,
-            "Only the approver can approve the operation."
-        );
-        _operations[operationIndex].approved = true;
-        if (checkApprovals()) {
-            status = Status.Approved;
-        }
-        emit OperationApproved(operationIndex);
-    }
-
     /**
      * Execute the operations in the Atom.
      * Reverts if the Atom has been executed or cancelled, or if any operation fails.
      */
     function settle() external onlyCounterparty {
-        if (status != Status.Approved) {
-            revert AtomNotApproved();
-        }
         status = Status.Executed;
 
         for (uint256 i = 0; i < _operations.length; i++) {
-            _operations[i].lockableContract.settleLock(
-                _operations[i].lockId,
-                ""
-            );
-            emit OperationSettled(i, _operations[i].lockId, "");
+            try
+                _operations[i].lockableContract.settleLock(
+                    _operations[i].lockId,
+                    ""
+                )
+            {
+                emit OperationSettled(i, _operations[i].lockId, "");
+            } catch (bytes memory reason) {
+                emit OperationSettleFailed(i, _operations[i].lockId, reason);
+            }
         }
         emit AtomStatusChanged(status);
     }
@@ -151,14 +141,5 @@ contract Atom is Ownable {
             }
         }
         emit AtomStatusChanged(status);
-    }
-
-    function checkApprovals() internal view returns (bool) {
-        for (uint256 i = 0; i < _operations.length; i++) {
-            if (!_operations[i].approved) {
-                return false;
-            }
-        }
-        return true;
     }
 }
