@@ -18,12 +18,6 @@ export function parseLockEvents(
                 delegate: event?.args.delegate,
                 amount: event?.args.amount,
             };
-        } else if (event?.name === "LockCreate") {
-            eventData = {
-                lockId: event?.args.lockId,
-                operator: event?.args.operator,
-                lockData: event?.args.lockData,
-            };
         } else if (event?.name === "AtomDeployed") {
             eventData = {
                 atomInstance: event?.args.addr,
@@ -31,6 +25,18 @@ export function parseLockEvents(
         } else if (event?.name === "AtomBespokeDeployed") {
             eventData = {
                 atomInstance: event?.args.addr,
+            };
+        } else if (event?.name === "OperationSettled") {
+            eventData = {
+                operationIndex: event?.args.operationIndex,
+                lockId: event?.args.lockId,
+                data: event?.args.data,
+            };
+        } else if (event?.name === "OperationSettleFailed") {
+            eventData = {
+                operationIndex: event?.args.operationIndex,
+                lockId: event?.args.lockId,
+                reason: event?.args.reason,
             };
         } else if (event?.name === "OperationRolledBack") {
             eventData = {
