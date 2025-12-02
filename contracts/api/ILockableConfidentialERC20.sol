@@ -43,7 +43,7 @@ interface ILockableConfidentialERC20 is ILockable {
         address delegate;
     }
 
-    function createLock(
+    function lock(
         bytes32 lockId,
         address receiver,
         address delegate,

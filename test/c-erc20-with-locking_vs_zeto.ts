@@ -257,7 +257,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         // set the delegate to Bob himself initially, this way Bob
         // can recover the locked tokens if Alice fails to fulfill her obligations.
         const delegate = Bob.ethAddress;
-        const tx1 = await confidentialERC20.connect(Bob.signer).createLock(lockIdBob, Alice.ethAddress, delegate, encryptedInput.handles[0], encryptedInput.inputProof, "0x");
+        const tx1 = await confidentialERC20.connect(Bob.signer).lock(lockIdBob, Alice.ethAddress, delegate, encryptedInput.handles[0], encryptedInput.inputProof, "0x");
         const result: ContractTransactionReceipt | null = await tx1.wait();
 
         lockERC20Event = parseLockEvents(confidentialERC20, result!)[0];

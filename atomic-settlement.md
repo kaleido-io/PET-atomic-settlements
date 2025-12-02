@@ -131,29 +131,46 @@ function delegateLock(bytes32 lockId, address newDelegate, bytes calldata data) 
 - `ILockableConfidentialUTXO`: as a demonstration of how commitments based token implementations can support locking.
 
 ```solidity
-function createLock(
-    bytes32 lockId,
-    LockParameters calldata parameters,
-    bytes calldata proof,
-    address delegate,
-    LockOperationData calldata settle,
-    LockOperationData calldata rollback,
-    bytes calldata data
-) external;
+    function lock(
+        bytes32 lockId,
+        LockParameters calldata parameters,
+        bytes calldata proof,
+        bytes calldata data
+    ) external;
 
-function delegateLock(
-    bytes32 lockId,
-    address newDelegate,
-    bytes calldata data
-) external;
+    function prepareUnlock(
+        bytes32 lockId,
+        UnlockOperation calldata settle,
+        bytes calldata data
+    ) external;
+
+    function delegateLock(
+        bytes32 lockId,
+        address delegate,
+        bytes calldata data
+    ) external;
+
+    function unlock(
+        bytes32 lockId,
+        UnlockOperationData calldata settle
+    ) external;
+
+    function rollbackLock(
+        bytes32 lockId,
+        UnlockOperationData calldata rollback
+    ) external;
 ```
 
 There are slight differences in the function signature due to the different onchain state model used by account-based tokens vs. UTXO-based tokens. But the locking mechanism is the same and works as follows:
 
-- A lock must be created in a one-time opportunity with `createLock` and cannot be modified except for changing the delegate. This is done for safety reasons: we do not want the trading counterparty to cheat by redirecting the locked funds elsewhere after we have committed our part of the trade agreement.
-- The `createLock` function should be carefully implemented to guarantee true locking, such that the locked assets cannot be transferred again except for the lock's settlement or rollback.
-- The trade counterparty must be able to inspect the createLock transaction and verify that the `settle` operation represents the intended asset value and movement, as agreed upon. Given the confidential (and anonymous in the case of certain token implementations) nature of the token, the ability to fully verify may depend on secret sharing from the asset owner via out-of-band channels. This is dependent on the specific token implementation.
-- The `delegate` is an important concept for the lock mechanism to work. This is the only party that can carry out the intended operations to settle, or to rollback either when the trade falls apart (one of the counterparties failed to fulfill their commitment), or when the settlement fails to execute. Typically the delegate should be a smart contract, with trusted processing logic to settle and to rollback under the expected conditions.
+- A lock has 3 parts: the locked asset, the unlock operation (who gets what when the lock is released), and the delegate. Only after all 3 parts are put in place, is a lock considered **committed**. A counterparty should carefully check for all 3 parts to decide if the trading partner has fully committed to the proposed asset for the trade.
+  - `lock()`: this function locks the assets
+  - `prepareUnlock()`: this function configures how the locked assets will be distributed when the lock is released
+  - `delegateLock()`: this function designates the account that can perform the unlock operation. The `delegate` is an important concept for the lock mechanism to work. This is the only party that can carry out the intended operations to settle, or to rollback either when the trade falls apart (one of the counterparties failed to fulfill their commitment), or when the settlement fails to execute. Typically the delegate should be a smart contract, with trusted processing logic to settle and to rollback under the expected conditions.
+- The `lock()` function should be carefully implemented to guarantee true locking, such that the locked assets cannot be transferred again except for the lock's settlement or rollback.
+- The trade counterparty must be able to inspect the transactions and verify that the unlock operation configured on the lock, via the `prepareUnlock()` call, represents operations that will transfer the desired amount of assets to the counterparty as the receiver.
+  - Given the confidential (and anonymous in the case of certain token implementations) nature of the token, the ability to fully verify may depend on secret sharing from the asset owner via out-of-band channels. This is dependent on the specific token implementation.
+- A lockable contract must also implement rollback so that a party can recover the locked funds in case the trade did not complete successfully.
 
 ### Generic lock interface
 
@@ -162,8 +179,8 @@ Both of the above interfaces extend the following **_generic lock interface_**. 
 - `ILockable`: with a simple interface that provides two functions, `settleLock` and `rollbackLock`, to be called to either proceed with settlement or to rollback. Each operation uses the `lockId` to signal to the target privacy token contract the lock to operate on.
 
 ```solidity
-function settleLock(bytes32 lockId, bytes calldata data) external;
-function rollbackLock(bytes32 lockId, bytes calldata data) external;
+function unlock(bytes32 lockId, UnlockOperationData calldata opData) external;
+function rollbackLock(bytes32 lockId, UnlockOperationData calldata opData) external;
 ```
 
 The above generic interface is expected to work with all privacy tokens that have implemented a lock interface to allow settle and rollback flow to be deterministically driven by a lock ID.
@@ -196,16 +213,10 @@ sequenceDiagram
   participant A2 as Asset-2 contract<br>(FHE)
   participant T as Trusted Party
   participant E as Escrow contract
-  par Trust Party deploys and initializes Escrow contract
-  rect rgb(200, 150, 255)
-    T->>E: deploy
-    T->>E: initialize([lockId-1, lockId-2])
-  end
-  end
   par Alice sets up trade leg 1
   rect rgb(200, 150, 255)
     A->>A1: lock asset-1 token(s) to Escrow using lockId-1
-    A1->>A1: set Escrow as delegate for lockId-1
+    A->>A1: prepare unlock operation
     A1-->>A: lock event (lockId-1, UTXO hash)
     A1-->>B: lock event (lockId-1, UTXO hash)
   end
@@ -229,12 +240,16 @@ sequenceDiagram
     A->>A2: queries the ciphertext (transfer amount), decrypts to verify expected value
   end
   end
+  par Trust Party deploys and initializes Escrow contract
+    T->>E: deploy
+    T->>E: initialize([lockId-1, lockId-2])
+  end
   par trade execution approvals
     rect rgb(200, 150, 255)
-    A->>E: approves lockId-1
+    A->>A1: set Escrow as delegate for lockId-1
     end
     rect rgb(191, 223, 255)
-    B->>E: approves lockId-2
+    B->>B1: set Escrow as delegate for lockId-2
   end
   end
   par trade execution
@@ -296,10 +311,6 @@ sequenceDiagram
   end
 ```
 
-To support this scenario:
-
-- The Escrow contract must allow a partially set up trade to be cancelled, but only by the trade participants as designated by the list of Operations.
-
 ### Failure case #2 - a malicious party attempting to initialize with invalid Operations
 
 A malicious party can initialize the escrow contract with an invalid operation, such that it will always fail either on `settle()` or `cancel()`. This results in the honest parties' locked assets to stay locked forever, because they have been committed to be only settled or rolled back by the escrow contract, which is now compromised.
@@ -339,5 +350,4 @@ sequenceDiagram
 
 To guard against this case:
 
-- The escrow contract initialization must happen first, then each of the trade legs is set up, using the lockIds proposed in the list of operations passed to `initialize()`.
 - The `cancel()` function of the escrow contract must be implemented to catch reverts in the downstream calls to the token contracts' `rollbackLock()` function. Otherwise, a malicious participant can implement a lock that reverts on rollback and prevents other participants from getting back their locked assets.

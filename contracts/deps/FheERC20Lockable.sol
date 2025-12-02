@@ -16,7 +16,7 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
         address sender
     );
 
-    function createLock(
+    function lock(
         bytes32 lockId,
         address receiver,
         address delegate,
