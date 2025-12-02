@@ -23,13 +23,8 @@ contract Atom is Ownable {
         address approver;
         // the id of the lock set up in the lockable contract
         bytes32 lockId;
-    }
-
-    struct operation {
-        ILockable lockableContract;
-        address approver;
-        bytes32 lockId;
-        bool approved;
+        // the detailed operation data
+        ILockable.UnlockOperationData opData;
     }
 
     event AtomStatusChanged(Status status);
@@ -50,10 +45,11 @@ contract Atom is Ownable {
         bytes reason
     );
     error NotCounterparty(address party);
+    error InvalidLockId(bytes32 lockId);
 
     Status public status;
     bool private _initialized;
-    operation[] private _operations;
+    Operation[] private _operations;
 
     constructor() Ownable(msg.sender) {
         _initialized = false;
@@ -86,13 +82,7 @@ contract Atom is Ownable {
     ) external initializedOnlyOnce onlyOwner {
         status = Status.Pending;
         for (uint256 i = 0; i < _ops.length; i++) {
-            operation memory op = operation(
-                _ops[i].lockableContract,
-                _ops[i].approver,
-                _ops[i].lockId,
-                false
-            );
-            _operations.push(op);
+            _operations.push(_ops[i]);
         }
         emit AtomStatusChanged(status);
     }
@@ -102,13 +92,17 @@ contract Atom is Ownable {
      * Reverts if the Atom has been executed or cancelled, or if any operation fails.
      */
     function settle() external onlyCounterparty {
+        require(
+            status == Status.Pending,
+            "The Atom can only be settled when it is in Pending status."
+        );
         status = Status.Executed;
 
         for (uint256 i = 0; i < _operations.length; i++) {
             try
-                _operations[i].lockableContract.settleLock(
+                _operations[i].lockableContract.unlock(
                     _operations[i].lockId,
-                    ""
+                    _operations[i].opData
                 )
             {
                 emit OperationSettled(i, _operations[i].lockId, "");
@@ -123,23 +117,26 @@ contract Atom is Ownable {
      * Cancel the Atom, preventing its execution.
      * Can only be done if the Atom is still pending.
      */
-    function cancel() external onlyCounterparty {
-        // should NOT require the status to be Approved, because we want to allow
-        // the counterparties to cancel the trade if others fail to approve, or
-        // failed to fulfill their obligations to set up the locks.
-        status = Status.Cancelled;
+    function cancel(
+        bytes32 lockId,
+        ILockable.UnlockOperationData memory opData
+    ) external onlyCounterparty {
+        // cancel should NOT be allowed unless the settle has been called.
+        require(
+            status == Status.Executed,
+            "The Atom can only be cancelled after the lock has been attempted to settle."
+        );
         for (uint256 i = 0; i < _operations.length; i++) {
-            try
-                _operations[i].lockableContract.rollbackLock(
-                    _operations[i].lockId,
-                    ""
-                )
-            {
-                emit OperationRolledBack(i, _operations[i].lockId, "");
-            } catch (bytes memory reason) {
-                emit OperationRollbackFailed(i, _operations[i].lockId, reason);
+            if (_operations[i].lockId != lockId) {
+                continue;
             }
+            try _operations[i].lockableContract.rollbackLock(lockId, opData) {
+                emit OperationRolledBack(i, lockId, "");
+            } catch (bytes memory reason) {
+                emit OperationRollbackFailed(i, lockId, reason);
+            }
+            return;
         }
-        emit AtomStatusChanged(status);
+        revert InvalidLockId(lockId);
     }
 }
