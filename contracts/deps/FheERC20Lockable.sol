@@ -49,7 +49,10 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
         );
     }
 
-    function settleLock(bytes32 lockId, bytes calldata data) public {
+    function unlock(
+        bytes32 lockId,
+        UnlockOperationData calldata opData
+    ) public {
         Lock memory lock = _locks[lockId];
         if (lock.delegate != msg.sender) {
             revert NotLockDelegate(lockId, lock.delegate, msg.sender);
@@ -73,11 +76,14 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
             lock.receiver,
             lock.delegate,
             transferred,
-            data
+            opData.data
         );
     }
 
-    function rollbackLock(bytes32 lockId, bytes calldata data) public {
+    function rollbackLock(
+        bytes32 lockId,
+        UnlockOperationData calldata opData
+    ) public {
         Lock memory lock = _locks[lockId];
         if (lock.delegate != msg.sender) {
             revert NotLockDelegate(lockId, lock.delegate, msg.sender);
@@ -101,7 +107,7 @@ contract FheERC20Lockable is FheERC20, ILockableConfidentialERC20 {
             lock.receiver,
             lock.delegate,
             transferred,
-            data
+            opData.data
         );
     }
 
