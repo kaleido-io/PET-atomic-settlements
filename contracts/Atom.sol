@@ -99,16 +99,11 @@ contract Atom is Ownable {
         status = Status.Executed;
 
         for (uint256 i = 0; i < _operations.length; i++) {
-            try
-                _operations[i].lockableContract.unlock(
-                    _operations[i].lockId,
-                    _operations[i].opData
-                )
-            {
-                emit OperationSettled(i, _operations[i].lockId, "");
-            } catch (bytes memory reason) {
-                emit OperationSettleFailed(i, _operations[i].lockId, reason);
-            }
+            _operations[i].lockableContract.unlock(
+                _operations[i].lockId,
+                _operations[i].opData
+            );
+            emit OperationSettled(i, _operations[i].lockId, "");
         }
         emit AtomStatusChanged(status);
     }
@@ -121,10 +116,9 @@ contract Atom is Ownable {
         bytes32 lockId,
         ILockable.UnlockOperationData memory opData
     ) external onlyCounterparty {
-        // cancel should NOT be allowed unless the settle has been called.
         require(
-            status == Status.Executed,
-            "The Atom can only be cancelled after the lock has been attempted to settle."
+            status == Status.Pending,
+            "The Atom can only be cancelled when it is in Pending status."
         );
         for (uint256 i = 0; i < _operations.length; i++) {
             if (_operations[i].lockId != lockId) {

@@ -57,7 +57,3 @@ export function parseLockEvents(
     }
     return events;
 }
-
-export function getUTXOHash(value: bigint, salt: bigint, owner: User): bigint {
-    return Poseidon.poseidon4([value, salt, owner.babyJubPublicKey[0], owner.babyJubPublicKey[1]]) as bigint;
-}
