@@ -26,7 +26,7 @@ Together, a shared `ILockableCapability` surface lets you compose **the same** s
 
 **Zeto (vendored copy).** The [Zeto / `zeto-solidity`](https://github.com/LFDT-Paladin/zeto) package carries a copy of the same interface (and related types) that mirrors the Paladin original. Zeto does not import Paladin as a reference dependency, because of dependency and packaging constraints; the copy is kept in sync by convention. The **Zeto UTXO** token implements the contract-facing lifecycle through **`IZetoLockableCapability`**, with Zeto-specific `bytes` for proofs, Merkle data, and UTXO handles (see Zeto’s `contracts/lib/interfaces/`). This repository’s `Atom` examples compile against the **`zeto-solidity`** copy.
 
-**Noto (Paladin).** Paladin’s **Noto** domain under [`solidity/domains/noto`](https://github.com/LFDT-Paladin/Paladin/tree/main/solidity/domains/noto) implements `ILockableCapability` for its token semantics, so the same `Atom`-style multi-leg pattern applies there on the **canonical** stack.
+**Noto (Paladin).** Paladin’s **Noto** domain under [`solidity/contracts/domains/noto`](https://github.com/LFDT-Paladin/Paladin/tree/main/solidity/contracts/domains/noto) implements `ILockableCapability` for its token semantics, so the same `Atom`-style multi-leg pattern applies there on the **canonical** stack.
 
 **This repository** adds reference **account-model (ERC-20) legs** (implemented against the `zeto-solidity` interface copy, consistent with the Paladin definition) on top of that family:
 

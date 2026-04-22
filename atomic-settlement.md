@@ -7,19 +7,20 @@
   - [Commitment based Tokens](#commitment-based-tokens)
     - [Hash (non-homomorphic) based Commitments](#hash-non-homomorphic-based-commitments)
     - [Homomorphic Commitments](#homomorphic-commitments)
-- [Atomic Settlements b/w Privacy Tokens](#atomic-settlements-bw-privacy-tokens)
+- [Atomic Settlements — protocol design](#atomic-settlements-between-privacy-tokens---protocol-design)
+- [Atomic Settlements — demonstrations](#atomic-settlements-between-privacy-tokens---demonstrations)
   - [Lock interfaces for the privacy tokens](#lock-interfaces-for-the-privacy-tokens)
   - [Generic lock interface](#generic-lock-interface)
   - [Settlement orchestration contract](#settlement-orchestration-contract)
-  - [Successful Settlement Flow #1 - Confidential ERC20 vs. Confidential UTXO](#successful-settlement-flow-1-confidential-erc20-vs-confidential-utxo)
-  - [Failure case #1 - counterparty fails to fulfill obligations during setup phase](#failure-case-1-counterparty-fails-to-fulfill-obligations-during-setup-phase)
-  - [Failure case #2 - a malicious party attempting to initialize with invalid Operations](#failure-case-2-a-malicious-party-attempting-to-initialize-with-invalid-operations)
+  - [Successful Settlement Flow #1 - Confidential ERC20 vs. Confidential UTXO](#successful-settlement-flow-1---confidential-erc20-vs-confidential-utxo)
+  - [Failure case #1 - counterparty fails to fulfill obligations during setup phase](#failure-case-1---counterparty-fails-to-fulfill-obligations-during-setup-phase)
+  - [Failure case #2 - a malicious party attempting to initialize with invalid Operations](#failure-case-2---a-malicious-party-attempting-to-initialize-with-invalid-operations)
 
-This document proposes an ERC for performing multi-leg settlements among an arbitrary number of privacy-enhancing tokens in a secure and atomic manner.
+This document describes a **protocol** (and reference implementation) for performing multi-leg settlements among an arbitrary number of privacy-enhancing tokens in a secure and atomic manner. It is not an official Ethereum ERC/EIP track document unless separately published as such.
 
 ## The Privacy Enhancing Tokens Landscape
 
-A number of privacy enhancing token designs exist in the Ethereum ecosystem today. This proposal is designed to accommodate different styles of privacy token designs. Below we briefly review the two mainstream designs of privacy enhancing tokens, along with some influential implementations for each.
+A number of privacy enhancing token designs exist in the Ethereum ecosystem today. The following material is designed to accommodate different styles of privacy token designs. Below we briefly review the two mainstream designs of privacy enhancing tokens, along with some influential implementations for each.
 
 ### Homomorphic Encryption based Tokens
 
@@ -54,7 +55,7 @@ Many privacy tokens fit in this category, including:
 - Zcash
 - Railgun
 - Aztec
-- LFDT's Paladin's [Noto](https://github.com/LFDT-Paladin/paladin/tree/main/solidity/contracts/domains/noto) and [Zeto](https://github.com/LFDT-Paladin/zeto) tokens
+- [Paladin](https://github.com/LFDT-Paladin/Paladin)’s [Noto](https://github.com/LFDT-Paladin/Paladin/tree/main/solidity/domains/noto) and [Zeto](https://github.com/LFDT-Paladin/zeto) tokens
 
 The samples in this repository are built with the Zeto token implementation.
 
@@ -107,21 +108,28 @@ Below is a more detailed illustration of the steps involved in the protocol:
 
 ## Atomic Settlements Between Privacy Tokens - demonstrations
 
-To demonstrate atomic settlements among privacy tokens, exemplary token implementations are selected to represent the major design patterns in the current privacy-enhancing tokens landscape, as described above. In particular, an implementation from the FHE-based design was selected—OpenZeppelin's Confidential ERC20—and an implementation from the commitment-based design was selected—LFDT's Zeto token.
+To demonstrate atomic settlements among privacy tokens, exemplary implementations are selected to match the major design patterns in the privacy-enhancing token landscape, as described above.
 
-Among the two tokens, 3 types of settlement flows can be implemented:
+- **UTXO / commitment (Zeto):** LFDT [Zeto](https://github.com/LFDT-Paladin/zeto) (`IZetoLockableCapability` in the `zeto-solidity` dependency), used with this repo’s `ILockableConfidentialUTXO` facade.
+- **FHE / account, lockable (confidential ERC-20):** OpenZeppelin-style confidential ERC-20 with `FheERC20Lockable` and `ILockableConfidentialERC20` (see [test/c-erc20-with-locking_vs_zeto.ts](./test/c-erc20-with-locking_vs_zeto.ts)).
+- **Cleartext ERC-20, lockable:** `ERC20Lockable` and `ILockableERC20` (same `ILockableCapability` lifecycle, `uint256` amount in `createArgs`; see [test/erc20-with-locking_vs_zeto.ts](./test/erc20-with-locking_vs_zeto.ts)).
+- **FHE / account, non-locking (IERC7984 only):** base confidential transfer into `Atom` without a full lock leg on the FHE side (see [test/c-erc20_vs_zeto.ts](./test/c-erc20_vs_zeto.ts)).
 
-- Confidential ERC20 vs. Confidential ERC20
-- Confidential ERC20 vs. Zeto
-- Zeto vs. Zeto
+In principle, the same orchestration applies to more pairings (e.g. confidential ERC-20 vs. confidential ERC-20, or Zeto vs. Zeto) when both sides expose the lock API and compatible `spendArgs`.
 
-The examples in this repository demonstrate that **_a generic locking-based settlement mechanism_** can be developed to support the major design patterns of privacy-enhancing tokens in multi-leg atomic settlement flows.
+The examples in this repository show that **a generic locking-based settlement mechanism** can support these patterns in multi-leg atomic flows (with `Atom` as the reference orchestrator).
 
 ### Lock interfaces for the privacy tokens
 
-The repository contains the following smart contract interfaces that need to be implemented in the privacy token contract to make the settlement flow work:
+The repository contains the following smart contract interfaces (or facades) that line up with the lock lifecycle for the reference tests:
 
-- `ILockableConfidentialERC20` (see `contracts/api/ILockableConfidentialERC20.sol`): a thin domain extension of the shared generic lock interface, `ILockableCapability` from the `zeto-solidity` package, for FHE (account) tokens. A lock is created with `createLock(bytes,bytes32,bytes32,bytes) returns (bytes32 lockId)` using ABI-encoded {ConfidentialErc20CreateLockArgs} for the first parameter (including a unique `txId` for collision-free `lockId` derivation, `receiver`, encrypted `amount` handle, and FHE `amountProof`). The current authorised actor is the `spender` in {ILockableCapability.LockInfo}; the implementation emits `LockCreated` and `ConfidentialErc20LockState` (with the ciphertext) for off-chain review.
+- **`ILockableCapability` (canonical definition):** maintained in the [Paladin](https://github.com/LFDT-Paladin/Paladin) repository. The [Zeto / `zeto-solidity`](https://github.com/LFDT-Paladin/zeto) package that this project depends on includes a **mirrored copy** of the same interface (and related types) for **dependency and packaging reasons**, not as a second source of truth. Implementations should stay aligned with the Paladin definition.
+
+- `ILockableConfidentialERC20` (see `contracts/api/ILockableConfidentialERC20.sol`): a thin domain extension of `ILockableCapability` (as imported from `zeto-solidity`) for FHE (account) tokens. A lock is created with `createLock(bytes,bytes32,bytes32,bytes) returns (bytes32 lockId)` using ABI-encoded {ConfidentialErc20CreateLockArgs} (unique `txId`, `receiver`, encrypted `amount` handle, FHE `amountProof`). The current authorised actor is the `spender` in {ILockableCapability.LockInfo}; the implementation emits `LockCreated` and `ConfidentialErc20LockState` (with the ciphertext) for off-chain review.
+
+- `ILockableERC20` (see `contracts/api/ILockableERC20.sol`): same generic lifecycle for **cleartext** ERC-20 amounts—`Erc20CreateLockArgs` uses `uint256 amount` and no FHE proof. Implemented by `ERC20Lockable` in `contracts/deps/ERC20Lockable.sol`; emits `Erc20LockState` alongside `LockCreated`.
+
+- `ILockableConfidentialUTXO` (see `contracts/api/ILockableConfidentialUTXO.sol`): extends `IZetoLockableCapability` from `zeto-solidity` (which mirrors the Paladin/Zeto UTXO lock API). Typed `ZetoCreateLockArgs` / `ZetoSpendLockArgs` and helper hashes are documented alongside `IZetoLockableCapability` in the Zeto package (e.g. deterministic `lockId` from `keccak256(abi.encode(address(this), msg.sender, txId))`).
 
 ```solidity
 // Generic lifecycle; see ILockableCapability
@@ -132,8 +140,6 @@ function spendLock(bytes32 lockId, bytes calldata spendArgs, bytes calldata data
 function cancelLock(bytes32 lockId, bytes calldata cancelArgs, bytes calldata data) external;
 // … and views: getLock, isLockActive, getLockContent, computeLockId
 ```
-
-- `ILockableConfidentialUTXO` (see `contracts/api/ILockableConfidentialUTXO.sol`): extends `IZetoLockableCapability` from the same `zeto-solidity` module. Zeto shares the same generic API as above; typed `ZetoCreateLockArgs` / `ZetoSpendLockArgs` payloads and helper hashes are documented in `IZetoLockableCapability.sol` (for example, deterministic `lockId` from `encode(address(this), msg.sender, txId)`).
 
 There are slight differences in the function signature due to the different onchain state model used by account-based tokens vs. UTXO-based tokens. But the locking mechanism is the same and works as follows:
 
@@ -146,14 +152,14 @@ There are slight differences in the function signature due to the different onch
 
 ### Generic lock interface
 
-Both of the above interfaces (directly or transitively) extend the shared `ILockableCapability` from `zeto-solidity/contracts/lib/interfaces/ILockableCapability.sol`. It is the **minimal generic lifecycle** for a lock: create, optional update, delegate, then **spend** (settle) or **cancel** (refund). The orchestrator, `Atom`, type-erases the implementation-specific `spendArgs` and `cancelArgs` as `bytes` and forwards them to `spendLock` and `cancelLock` respectively.
+The account and UTXO facades above (including `ILockableERC20`) all align with the shared **`ILockableCapability`** API. The **authoritative** interface is defined in **Paladin**; this repository compiles against the **copy** in `zeto-solidity/contracts/lib/interfaces/ILockableCapability.sol`. It is the **minimal generic lifecycle** for a lock: create, optional update, delegate, then **spend** (settle) or **cancel** (refund). The orchestrator, **`Atom`**, type-erases the implementation-specific `spendArgs` and `cancelArgs` as `bytes` and forwards them to `spendLock` and `cancelLock` respectively.
 
 ```solidity
 function spendLock(bytes32 lockId, bytes calldata spendArgs, bytes calldata data) external;
 function cancelLock(bytes32 lockId, bytes calldata cancelArgs, bytes calldata data) external;
 ```
 
-Token-specific structs (Zeto: `ZetoSpendLockArgs`; FHE: empty `spendArgs` in the reference v1) are `abi.encode`’d by clients before calling. Legacy names `unlock` and `rollbackLock` map to `spendLock` and `cancelLock`.
+Token-specific structs (Zeto: `ZetoSpendLockArgs`; FHE / cleartext lockable ERC-20: often empty `spendArgs` in the reference v1) are `abi.encode`’d by clients before calling. Legacy names `unlock` and `rollbackLock` map to `spendLock` and `cancelLock`.
 
 ### Settlement orchestration contract
 
@@ -169,11 +175,11 @@ This design assumes that necessary negotiations and orchestrations will happen a
 
 After the `initialize()` call, each of the trading parties must review the initialized `Operation` entries: `lockId`, `approver`, and the pre-encoded `spendArgs` bytes that the Atom will pass to `spendLock` at settlement. Then they signal their approval, typically by calling `delegateLock` on the token to install the settlement contract as the current *spender* for that `lockId`. Only after the agreed approvals (this repository’s `Atom` uses approvers as the counterparties) should the `settle()` function be executed.
 
-On the other hand, any of the trading parties should be allowed to call `cancel()` on the orchestrator contract, before all the approvals are given. This prevents a malicious party from holding up the settlement by staying silent.
+While the Atom is still `Pending`, a party may need to **cancel** (rollback) a leg if the other side never approves. In the reference `Atom` contract, `settle()` and `cancel()` are both gated by `onlyCounterparty`: the caller must be one of the configured `Operation.approver` addresses (typically the counterparty(ies) for each leg). So **arbitrary third parties** cannot invoke `cancel`; only the designated approvers can. `cancel` remains available before successful `settle` so an approver is not held hostage by a silent counterparty, subject to the rules of your deployment.
 
 ### Successful Settlement Flow #1 - Confidential ERC20 vs. Confidential UTXO
 
-The diagram below illustrates a full settlement flow that results in the successful settlement between two trading participants: one (Alice) using a Confidential UTXO token and one (Bob) using a Confidential ERC20 token.
+The diagram below illustrates a full settlement flow for two trading participants: Alice (confidential UTXO) and Bob (confidential FHE ERC-20). **Atom** is the **settlement / orchestration** contract. Asset contracts are the `ILockableCapability` implementations (Zeto and the FHE ERC-20 in this example), not necessarily a single classic escrow vault holding all asset types in every model.
 
 ```mermaid
 sequenceDiagram
@@ -182,11 +188,11 @@ sequenceDiagram
   actor B as Bob wallet
   participant A2 as Asset-2 contract<br>(FHE)
   participant T as Trusted Party
-  participant E as Escrow contract
+  participant E as Atom (orchestrator)
   par Alice sets up trade leg 1
   rect rgb(200, 150, 255)
-    A->>A1: lock asset-1 token(s) to Escrow using lockId-1
-    A->>A1: prepare unlock operation
+    A->>A1: createLock (lockId-1) / lock UTXO for trade
+    A->>A1: prepare spend (updateLock commitment, etc.)
     A1-->>A: lock event (lockId-1, UTXO hash)
     A1-->>B: lock event (lockId-1, UTXO hash)
   end
@@ -200,7 +206,7 @@ sequenceDiagram
   par Bob sets up the trade leg 2
   rect rgb(191, 223, 255)
     B->>B: accepts proposal
-    B->>A2: locks Asset-2 tokens amount to Escrow
+    B->>A2: createLock / lock Asset-2 toward agreed receiver
     B->>A2: approves Alice to see the encrypted value just locked
     A2->>A2: calls allow(ciphertext, Alice)
   end
@@ -210,24 +216,24 @@ sequenceDiagram
     A->>A2: queries the ciphertext (transfer amount), decrypts to verify expected value
   end
   end
-  par Trust Party deploys and initializes Escrow contract
+  par Trust Party deploys and initializes Atom
     T->>E: deploy
-    T->>E: initialize([lockId-1, lockId-2])
+    T->>E: initialize([leg-1, leg-2])
   end
-  par trade execution approvals
+  par trade execution approvals (delegateLock → Atom)
     rect rgb(200, 150, 255)
-    A->>A1: set Escrow as delegate for lockId-1
+    A->>A1: delegateLock: Atom is spender for lockId-1
     end
     rect rgb(191, 223, 255)
-    B->>B1: set Escrow as delegate for lockId-2
-  end
+    B->>A2: delegateLock: Atom is spender for lockId-2
+    end
   end
   par trade execution
-    A->>E: execute trade
-    E->>A1: unlocks lockId-1
-    A1->>A1: consumes locked asset and creates new asset for Bob
-    A1->>B: new asset UTXO for Bob
-    E->>A2: transfers ciphertext amount to Alice
+    A->>E: settle()
+    E->>A1: spendLock(lockId-1, …)
+    A1->>A1: consumes locked UTXO and creates new UTXO for Bob
+    A1->>B: new UTXO for Bob
+    E->>A2: spendLock(lockId-2, …)
     A2->>A: transfer(Alice, ciphertext)
   end
 ```
@@ -236,7 +242,9 @@ sequenceDiagram
 
 The locking mechanism must have safety features that protect against the following failure scenarios. A failure scenario can either be due to an intentional decision against the proposal, or malicious action to fail to fulfill required obligations.
 
-Because the proposed mechanism focuses on intra-chain settlements only, meaning all the target tokens are deployed on the same chain, the risks are all in the setup phase, where each counterparty is expected to fulfill their side of the bargain obligation. Once the setup is complete and approved, the final settlement happens atomically, guaranteed by the underlying blockchain protocol.
+Because this mechanism focuses on intra-chain settlements only, meaning all the target tokens are deployed on the same chain, the risks are all in the setup phase, where each counterparty is expected to fulfill their side of the bargain obligation. Once the setup is complete and approved, the final settlement happens atomically, guaranteed by the underlying blockchain protocol.
+
+The diagram below is a **generic** illustration with **three** legs (Alice, Bob, Charlie) where one party never completes setup. The tests in this repository often use **two** parties only—for example, Alice creates her UTXO lock but Bob never creates an on-chain FHE lock; Alice can then `cancelLock` (or, after `Atom` is wired, cancel via the orchestrator) without settling.
 
 ```mermaid
 sequenceDiagram
@@ -246,44 +254,44 @@ sequenceDiagram
   participant A2 as Asset-2 contract
   actor C as Charlie wallet
   participant A3 as Asset-3 contract
-  participant E as Escrow contract
+  participant E as Atom (orchestrator)
   par Alice sets up trade leg 1
   rect rgb(200, 150, 255)
-    A->>A1: lock asset-1 token(s) to Escrow
-    A1->>A1: set Escrow as delegate for A1
+    A->>A1: lock; later delegate to Atom
+    A1->>A1: lock active (spender TBD)
   end
   end
   par Bob sets up trade leg 2
   rect rgb(191, 223, 255)
-    B->>A2: lock asset-2 token(s) to Escrow
-    A2->>A2: set Escrow as delegate for A2
+    B->>A2: lock; later delegate to Atom
+    A2->>A2: lock active (spender TBD)
   end
   end
   par Charlie rejects the trade or maliciously goes offline
-  rect rgb(081, 123, 155)
+  rect rgb(81, 123, 155)
     C->>C: stays silent
   end
   end
-  par Bob cancels trade
+  par A counterparty cancels via Atom
   rect rgb(191, 223, 255)
-    B->>E: cancel trade
+    B->>E: cancel(lockId, …) / cancelLock on a leg
   end
   end
-  par Escrow rolls back locks
+  par Atom rolls back locks
   rect rgba(191, 255, 197, 1)
-    E->>A1: rollback lockId-1
-    E->>A2: rollback lockId-2
-    E->>A3: rollback lockId-3
-    A1->>A: unlock asset-1 tokens
-    A2->>B: unlock asset-2 tokens
-    A3->>A3: revert
+    E->>A1: cancelLock / refund leg 1
+    E->>A2: cancelLock / refund leg 2
+    E->>A3: optional third leg
+    A1->>A: release asset-1
+    A2->>B: release asset-2
+    A3->>A3: leg 3 inert or reverted
   end
   end
 ```
 
 ### Failure case #2 - a malicious party attempting to initialize with invalid Operations
 
-A malicious party can initialize the escrow contract with an invalid operation, such that it will always fail either on `settle()` or `cancel()`. This results in the honest parties' locked assets to stay locked forever, because they have been committed to be only settled or rolled back by the escrow contract, which is now compromised.
+A malicious party can **`initialize` Atom** (or a similar orchestrator) with a malformed `Operation`, such that later calls to `settle()` or `cancel()` always revert. In the worst case, honest parties' locks remain bound to an unusable workflow—hence the importance of one-time, trusted `initialize`, review of pre-encoded `spendArgs` / `lockId`s, and the mitigations below.
 
 ```mermaid
 sequenceDiagram
@@ -293,14 +301,14 @@ sequenceDiagram
   participant A2 as Asset-2 contract
   actor C as Charlie wallet
   participant A3 as Asset-3 contract
-  participant E as Escrow contract
+  participant E as Atom (orchestrator)
   participant T as Trusted Party
-  par Alice, Bob and Charlies complete the setup
+  par Alice, Bob, and Charlie complete the setup
     A->>A1: Alice sets up leg 1
     B->>A2: Bob sets up leg 2
     C->>A3: Charlie sets up leg 3
   end
-  par A malicious "trusted" party initializes the Escrow contract with invalid operations
+  par A malicious "trusted" party initializes Atom with invalid operations
   rect rgba(240, 255, 191, 1)
     T->>E: initialize
   end
@@ -318,6 +326,7 @@ sequenceDiagram
   end
 ```
 
-To guard against this case:
+To guard against this case (see also [contracts/Atom.sol](contracts/Atom.sol)):
 
-- The `cancel()` function of the escrow contract wraps downstream `cancelLock()` calls in `try`/`catch` (see `Atom.sol`) so a malicious lock implementation cannot block refunds for the other leg.
+- The reference `Atom`’s `cancel()` wraps downstream `cancelLock()` calls in `try`/`catch` so a **malicious lock** on one leg does not block another leg’s `cancelLock` and emitted rollback events, reducing “all-or-nothing stuck” failure from *bad lock code* on a single leg.
+- Operational controls (reviewing `initialize` parameters, `onlyOwner` on `initialize`, and approver roles) still matter when *Atom itself* is misconfigured, because on-chain recourse may be limited.
