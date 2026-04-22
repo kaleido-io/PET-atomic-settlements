@@ -13,6 +13,10 @@ const TUPLE_SPEND =
 const TUPLE_ERC20_CREATE =
   "tuple(bytes32 txId, address receiver, uint256 amount, bytes amountProof)";
 
+/** @dev Matches {ILockableERC20.Erc20CreateLockArgs} (cleartext ERC-20 lock). */
+const TUPLE_ERC20_PLAIN_CREATE =
+  "tuple(bytes32 txId, address receiver, uint256 amount)";
+
 const abi = AbiCoder.defaultAbiCoder();
 
 /** FHE `externalEuint64` from the relayer: `Uint8Array` handle, must become uint256 for AbiCoder. */
@@ -93,6 +97,26 @@ export function encodeErc20CreateLockArgs(p: {
         amountProof: amountProofToBytes(
           p.amountProof as any,
         ),
+      },
+    ],
+  );
+}
+
+/**
+ * `createArgs` for {ILockableERC20.createLock} / {ERC20Lockable} (uint256 amount, no proof).
+ */
+export function encodePlainErc20CreateLockArgs(p: {
+  txId: string;
+  receiver: string;
+  amount: import("ethers").BigNumberish;
+}): string {
+  return abi.encode(
+    [TUPLE_ERC20_PLAIN_CREATE],
+    [
+      {
+        txId: p.txId,
+        receiver: p.receiver,
+        amount: p.amount,
       },
     ],
   );
