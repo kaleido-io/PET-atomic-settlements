@@ -257,13 +257,13 @@ sequenceDiagram
   participant E as Atom (orchestrator)
   par Alice sets up trade leg 1
   rect rgb(200, 150, 255)
-    A->>A1: lock; later delegate to Atom
+    A->>A1: lock<br>later delegate to Atom
     A1->>A1: lock active (spender TBD)
   end
   end
   par Bob sets up trade leg 2
   rect rgb(191, 223, 255)
-    B->>A2: lock; later delegate to Atom
+    B->>A2: lock<br>later delegate to Atom
     A2->>A2: lock active (spender TBD)
   end
   end
