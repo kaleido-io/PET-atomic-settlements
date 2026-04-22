@@ -19,7 +19,6 @@ import { FhevmType } from '@fhevm/hardhat-plugin';
 import { ContractTransactionReceipt, ZeroHash } from "ethers";
 import { expect } from "chai";
 import { Merkletree, InMemoryDB, str2Bytes } from "@iden3/js-merkletree";
-import { randomBytes } from "crypto";
 import { loadCircuit } from "zeto-js";
 import { Logger, ILogObj } from "tslog";
 const logLevel = process.env.LOG_LEVEL || "3";
@@ -37,11 +36,18 @@ import {
   newNullifier,
   doMint,
   ZERO_UTXO,
-  parseUTXOEvents,
 } from "zeto-solidity/test/lib/utils";
 import { deployZeto } from "zeto-solidity/test/lib/deploy";
-import { loadProvingKeys, calculateUnlockHash } from "zeto-solidity/test/utils";
+import { loadProvingKeys, calculateSpendHash } from "zeto-solidity/test/utils";
 import { parseLockEvents } from "./lib/utils";
+import {
+  randomTxId,
+  encodeZetoCreateLockArgs,
+  encodeZetoUpdateLockArgs,
+  encodeZetoDelegateLockArgs,
+  encodeZetoSpendLockArgs,
+  readLockIdFromZetoLockCreated,
+} from "./lib/zetoLockableE2E";
 
 describe("DvP flows between a vanilla Confidential ERC20 tokens and a Confidential UTXO token", function () {
   let Deployer: User; // the minter of the FHE ERC20 tokens and Zeto tokens
@@ -147,18 +153,8 @@ describe("DvP flows between a vanilla Confidential ERC20 tokens and a Confidenti
       let paymentForBob: UTXO;
       let changeForAlice: UTXO;
       let saltForProposedPaymentForBob: bigint;
-      let changeForAliceUTXO: BigInt;
-
-      let lockUTXOEvent: any;
-      let unlockPrepareEvent: any;
-
-      it("Alice locks a UTXO to initiate a trade with Bob", async function () {
-        // generate random lockId for Alice's lock
-        lockIdAlice = "0x" + randomBytes(32).toString("hex");
-        // Alice consumes a Zeto token and locks it
+      it("Alice createLocks a UTXO to initiate a trade with Bob", async function () {
         const nullifier1 = newNullifier(payment1, Alice);
-        // The locked UTXO is owned by Alice, who is responsible for generating the proof
-        // and giving it to the Atom contract as the delegate.
         lockedUtxo = newUTXO(payment1.value!, Alice);
         const root = await smtAlice.root();
         const proof1 = await smtAlice.generateCircomVerifierProof(
@@ -181,66 +177,54 @@ describe("DvP flows between a vanilla Confidential ERC20 tokens and a Confidenti
           merkleProofs,
           [Alice, Alice],
         );
-
-        const lockParameters = {
+        const cArgs = encodeZetoCreateLockArgs({
+          txId: randomTxId(),
           inputs: [nullifier1.hash],
           outputs: [],
           lockedOutputs: [lockedUtxo.hash],
-        };
-        const tx = await zkUTXO.connect(Alice.signer).lock(
-          lockIdAlice,
-          lockParameters,
-          encodeToBytes(root.bigInt(), encodedProof), // encode the root and proof together
-          "0x",
-        );
-        const result: ContractTransactionReceipt | null = await tx.wait();
-
-        // Note that the locked UTXO should NOT be added to the local SMT for UTXOs because it's tracked in a separate SMT onchain
-        // we add it to the local SMT for locked UTXOs
-        const events = parseUTXOEvents(zkUTXO, result!);
-        lockUTXOEvent = events[0];
+          proof: encodeToBytes(root.bigInt(), encodedProof),
+        });
+        const t = await zkUTXO.connect(Alice.signer).createLock(cArgs, ZeroHash, ZeroHash, "0x");
+        const w: ContractTransactionReceipt | null = await t.wait();
+        lockIdAlice = readLockIdFromZetoLockCreated(zkUTXO, w!);
       });
 
-      it("Alice prepares the unlock details for the trade proposal", async function () {
+      it("Alice updateLock to bind the spend commitment for the trade proposal", async function () {
         paymentForBob = newUTXO(75, Bob);
         changeForAlice = newUTXO(25, Alice);
-        const lockedInputs = [lockedUtxo];
-        const outputs = [paymentForBob, changeForAlice];
-
-        const unlockHash = calculateUnlockHash(
-          lockedInputs,
+        const spendH = calculateSpendHash(
+          [lockedUtxo],
           [],
-          outputs,
+          [paymentForBob, changeForAlice],
           "0x",
         );
-        const tx = await zkUTXO.connect(Alice.signer).prepareUnlock(
-          lockIdAlice,
-          { unlockHash },
-          "0x",
-        );
-        const result = await tx.wait();
-        const events = parseUTXOEvents(zkUTXO, result!);
-        unlockPrepareEvent = events[0];
-        // Alice will share the following with Bob in secure p2p communication channels
+        const tx2 = await zkUTXO
+          .connect(Alice.signer)
+          .updateLock(
+            lockIdAlice,
+            encodeZetoUpdateLockArgs(randomTxId()),
+            spendH,
+            ZeroHash,
+            "0x",
+          );
+        await tx2.wait();
         saltForProposedPaymentForBob = paymentForBob.salt! as bigint;
-        changeForAliceUTXO = changeForAlice.hash;
+        const g = await zkUTXO.getLock(lockIdAlice);
+        expect(g.spendCommitment).to.equal(
+          spendH,
+        );
       });
 
-      it("Bob decodes the LockCreate event, decodes the lock operation parameters, and verifies the output UTXOs", async function () {
-        // check that the lockId in the event is the same as the lockId used in the operation for Alice's lock
-        expect(lockUTXOEvent.lockId).to.equal(lockIdAlice);
-
-        // Bob assembles the inputs and outputs of the unlock operation
-        const expectedUnlockInputs = [lockedUtxo];
+      it("Bob verifies the spend commitment on-chain matches the expected UTXO outputs", async function () {
         const expectedHashForProposedPaymentForBob = newUTXO(75, Bob, saltForProposedPaymentForBob);
-        const outputsInUnlockPrepare = [expectedHashForProposedPaymentForBob, { hash: changeForAliceUTXO }];
-        const expectedUnlockHash = calculateUnlockHash(
-          expectedUnlockInputs,
+        const ex = calculateSpendHash(
+          [lockedUtxo],
           [],
-          outputsInUnlockPrepare,
+          [expectedHashForProposedPaymentForBob, changeForAlice],
           "0x",
         );
-        expect(unlockPrepareEvent.settle.unlockHash).to.equal(expectedUnlockHash);
+        const g2 = await zkUTXO.getLock(lockIdAlice);
+        expect(g2.spendCommitment).to.equal(ex);
       });
 
       it("Alice and Bob agrees on an Atom contract instance to use for the trade", async function () {
@@ -252,17 +236,18 @@ describe("DvP flows between a vanilla Confidential ERC20 tokens and a Confidenti
           [paymentForBob, changeForAlice],
           [Bob, Alice],
         );
-        const settleOperation = {
-          outputs: [paymentForBob.hash, changeForAlice.hash],
+        const zetoSpend = encodeZetoSpendLockArgs({
+          txId: randomTxId(),
           lockedOutputs: [],
+          outputs: [paymentForBob.hash, changeForAlice.hash],
           proof: encodeToBytesLocked(encodedProofForSettle),
           data: "0x",
-        }
+        });
         const lockOperation = {
           lockableContract: zkUTXO,
           approver: Alice.ethAddress,
           lockId: lockIdAlice,
-          opData: settleOperation,
+          spendArgs: zetoSpend,
         };
         const erc20TransferOperation = {
           tokenContract: confidentialERC20.target,
@@ -302,9 +287,11 @@ describe("DvP flows between a vanilla Confidential ERC20 tokens and a Confidenti
     });
 
     describe("Trade approvals", function () {
-      let lockId: string;
       it("Alice approves the trade", async function () {
-        const tx = await zkUTXO.connect(Alice.signer).delegateLock(lockIdAlice, atomInstance.target, "0x");
+        const d = encodeZetoDelegateLockArgs(randomTxId());
+        const tx = await zkUTXO
+          .connect(Alice.signer)
+          .delegateLock(lockIdAlice, d, atomInstance.target, "0x");
         await tx.wait();
       });
 

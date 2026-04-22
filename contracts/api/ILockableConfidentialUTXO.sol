@@ -15,6 +15,6 @@
 // limitations under the License.
 pragma solidity ^0.8.27;
 
-import {IZetoLockable} from "zeto-solidity/contracts/lib/interfaces/izeto_lockable.sol";
+import {IZetoLockableCapability} from "zeto-solidity/contracts/lib/interfaces/IZetoLockableCapability.sol";
 
-interface ILockableConfidentialUTXO is IZetoLockable {}
+interface ILockableConfidentialUTXO is IZetoLockableCapability {}

@@ -11,12 +11,22 @@ export function parseLockEvents(
         const event = lockContract.interface.parseLog(log as any);
         let eventData: any = null;
         if (event?.name === "LockCreated") {
+            // {ILockableCapability.LockCreated}
             eventData = {
-                lockId: event?.args.lockId,
-                owner: event?.args.owner,
-                receiver: event?.args.receiver,
-                delegate: event?.args.delegate,
-                amount: event?.args.amount,
+                lockId: event?.args?.lockId,
+                owner: event?.args?.owner,
+                spender: event?.args?.spender,
+                spendCommitment: event?.args?.spendCommitment,
+                cancelCommitment: event?.args?.cancelCommitment,
+                data: event?.args?.data,
+            };
+        } else if (event?.name === "ConfidentialErc20LockState") {
+            eventData = {
+                lockId: event?.args?.lockId,
+                owner: event?.args?.owner,
+                receiver: event?.args?.receiver,
+                amount: event?.args?.amount,
+                data: event?.args?.data,
             };
         } else if (event?.name === "AtomDeployed") {
             eventData = {

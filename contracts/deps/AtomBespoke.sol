@@ -6,7 +6,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {euint64} from "@fhevm/solidity/lib/FHE.sol";
 import {IERC7984} from "@openzeppelin/confidential-contracts/interfaces/IERC7984.sol";
 import {IConfidentialBalanceCheck} from "./interfaces/IConfidentialBalanceCheck.sol";
-import {ILockable} from "zeto-solidity/contracts/lib/interfaces/ILockable.sol";
+import {ILockableCapability} from "zeto-solidity/contracts/lib/interfaces/ILockableCapability.sol";
 
 contract AtomBespoke is Ownable {
     using Address for address;
@@ -19,14 +19,14 @@ contract AtomBespoke is Ownable {
     }
 
     struct LockOperation {
-        ILockable lockableContract;
+        ILockableCapability lockableContract;
         // the account that can approve the operation before called by settle or cancel.
         // in most cases, this is the counterparty in the trade that owns the locked asset.
         address approver;
         // the id of the lock set up in the lockable contract
         bytes32 lockId;
-        // the detailed operation data
-        ILockable.UnlockOperationData opData;
+        // ABI-encoded {ILockableCapability.spendLock} payload
+        bytes spendArgs;
     }
 
     struct ERC20TransferOperation {
@@ -133,9 +133,10 @@ contract AtomBespoke is Ownable {
         }
         status = Status.Executed;
 
-        _lockOperation.lockableContract.unlock(
+        _lockOperation.lockableContract.spendLock(
             _lockOperation.lockId,
-            _lockOperation.opData
+            _lockOperation.spendArgs,
+            new bytes(0)
         );
         emit LockOperationSettled(_lockOperation.lockId, "");
 

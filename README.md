@@ -99,4 +99,4 @@ _To be added..._
 
 ## Running the test yourself
 
-Make sure to check out the `lock-id` branch of the [Zeto](https://github.com/LFDT-Paladin/zeto) repo and place it in the same parent directory as this repo.
+Make sure to check out the `ilock` branch of the [Zeto](https://github.com/LFDT-Paladin/zeto) repo and place it in the same parent directory as this repo.

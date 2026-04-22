@@ -121,69 +121,39 @@ The examples in this repository demonstrate that **_a generic locking-based sett
 
 The repository contains the following smart contract interfaces that need to be implemented in the privacy token contract to make the settlement flow work:
 
-- `ILockableConfidentialERC20`: as a demonstration for how Confidential ERC20 token implementations can be enhanced to support locking, where a portion of an account's balance is locked during the settlement period, such that only the designated `delegate` account can perform transfers on the locked amount. During the lock period, even the account owner is prevented from transferring the locked amount, thus keeping the committed values for a proposed trade/swap safe until settlement time.
+- `ILockableConfidentialERC20` (see `contracts/api/ILockableConfidentialERC20.sol`): a thin domain extension of the shared generic lock interface, `ILockableCapability` from the `zeto-solidity` package, for FHE (account) tokens. A lock is created with `createLock(bytes,bytes32,bytes32,bytes) returns (bytes32 lockId)` using ABI-encoded {ConfidentialErc20CreateLockArgs} for the first parameter (including a unique `txId` for collision-free `lockId` derivation, `receiver`, encrypted `amount` handle, and FHE `amountProof`). The current authorised actor is the `spender` in {ILockableCapability.LockInfo}; the implementation emits `LockCreated` and `ConfidentialErc20LockState` (with the ciphertext) for off-chain review.
 
 ```solidity
-function createLock(bytes32 lockId, address receiver, address delegate, externalEuint64 amount, bytes calldata proof, bytes calldata data) external;
-function delegateLock(bytes32 lockId, address newDelegate, bytes calldata data) external;
+// Generic lifecycle; see ILockableCapability
+function createLock(bytes calldata createArgs, bytes32 spendCommitment, bytes32 cancelCommitment, bytes calldata data) external returns (bytes32 lockId);
+function updateLock(bytes32 lockId, bytes calldata updateArgs, bytes32 spendCommitment, bytes32 cancelCommitment, bytes calldata data) external;
+function delegateLock(bytes32 lockId, bytes calldata delegateArgs, address newSpender, bytes calldata data) external;
+function spendLock(bytes32 lockId, bytes calldata spendArgs, bytes calldata data) external;
+function cancelLock(bytes32 lockId, bytes calldata cancelArgs, bytes calldata data) external;
+// … and views: getLock, isLockActive, getLockContent, computeLockId
 ```
 
-- `ILockableConfidentialUTXO`: as a demonstration of how commitments based token implementations can support locking.
-
-```solidity
-    function lock(
-        bytes32 lockId,
-        LockParameters calldata parameters,
-        bytes calldata proof,
-        bytes calldata data
-    ) external;
-
-    function prepareUnlock(
-        bytes32 lockId,
-        UnlockOperation calldata settle,
-        bytes calldata data
-    ) external;
-
-    function delegateLock(
-        bytes32 lockId,
-        address delegate,
-        bytes calldata data
-    ) external;
-
-    function unlock(
-        bytes32 lockId,
-        UnlockOperationData calldata settle
-    ) external;
-
-    function rollbackLock(
-        bytes32 lockId,
-        UnlockOperationData calldata rollback
-    ) external;
-```
+- `ILockableConfidentialUTXO` (see `contracts/api/ILockableConfidentialUTXO.sol`): extends `IZetoLockableCapability` from the same `zeto-solidity` module. Zeto shares the same generic API as above; typed `ZetoCreateLockArgs` / `ZetoSpendLockArgs` payloads and helper hashes are documented in `IZetoLockableCapability.sol` (for example, deterministic `lockId` from `encode(address(this), msg.sender, txId)`).
 
 There are slight differences in the function signature due to the different onchain state model used by account-based tokens vs. UTXO-based tokens. But the locking mechanism is the same and works as follows:
 
-- A lock has 3 parts: the locked asset, the unlock operation (who gets what when the lock is released), and the delegate. Only after all 3 parts are put in place, is a lock considered **committed**. A counterparty should carefully check for all 3 parts to decide if the trading partner has fully committed to the proposed asset for the trade.
-  - `lock()`: this function locks the assets
-  - `prepareUnlock()`: this function configures how the locked assets will be distributed when the lock is released
-  - `delegateLock()`: this function designates the account that can perform the unlock operation. The `delegate` is an important concept for the lock mechanism to work. This is the only party that can carry out the intended operations to settle, or to rollback either when the trade falls apart (one of the counterparties failed to fulfill their commitment), or when the settlement fails to execute. Typically the delegate should be a smart contract, with trusted processing logic to settle and to rollback under the expected conditions.
-- The `lock()` function should be carefully implemented to guarantee true locking, such that the locked assets cannot be transferred again except for the lock's settlement or rollback.
-- The trade counterparty must be able to inspect the transactions and verify that the unlock operation configured on the lock, via the `prepareUnlock()` call, represents operations that will transfer the desired amount of assets to the counterparty as the receiver.
-  - Given the confidential (and anonymous in the case of certain token implementations) nature of the token, the ability to fully verify may depend on secret sharing from the asset owner via out-of-band channels. This is dependent on the specific token implementation.
-- A lockable contract must also implement rollback so that a party can recover the locked funds in case the trade did not complete successfully.
+- A lock is considered **ready for inspection** when the value is locked, spend/cancel commitments (if used) are published via `updateLock` (optional when commitments stay zero), and a current `spender` is chosen who may execute `spendLock` or `cancelLock`. A counterparty should check on-chain {getLock} / {getLockContent} (or domain events such as {ZetoLockCreated} or {ConfidentialErc20LockState}) to validate the terms.
+  - `createLock`: materialises the lock and, for Zeto, consumes UTXO inputs to produce `lockedOutputs`; the lock id is usually predictable via `computeLockId`.
+  - `updateLock`: (when the lock is still *owner-controlled*, `spender == owner` in the generic {LockInfo}) rewrites the spend and cancel `bytes32` commitments, binding the off-chain expected settlement and refund parameters.
+  - `delegateLock`: reassigns the *spender* (formerly called “delegate” in the older narrative) to another account—typically the atomic settlement / Atom contract—using implementation-specific `delegateArgs` and replay-guarding `txId` fields where required.
+- A lock is implemented so that, while active, funds cannot be moved except by the current spender, via the generic `spendLock` (settle) or `cancelLock` (refund) paths, subject to token-specific ZK and commitment checks.
+- A counterparty reads spend commitments (and optional cancel commitments) to confirm that a proposed future `spendLock` / `cancelLock` is tied to the agreed outputs; secret details may still require out-of-band disclosure.
 
 ### Generic lock interface
 
-Both of the above interfaces extend the following **_generic lock interface_**. This interface describes the minimal behavior of a lock that must be consistently implemented by a privacy token, in order to work with the settlement orchestration contract to drive the settlement or rollback operations against the privacy tokens:
-
-- `ILockable`: with a simple interface that provides two functions, `settleLock` and `rollbackLock`, to be called to either proceed with settlement or to rollback. Each operation uses the `lockId` to signal to the target privacy token contract the lock to operate on.
+Both of the above interfaces (directly or transitively) extend the shared `ILockableCapability` from `zeto-solidity/contracts/lib/interfaces/ILockableCapability.sol`. It is the **minimal generic lifecycle** for a lock: create, optional update, delegate, then **spend** (settle) or **cancel** (refund). The orchestrator, `Atom`, type-erases the implementation-specific `spendArgs` and `cancelArgs` as `bytes` and forwards them to `spendLock` and `cancelLock` respectively.
 
 ```solidity
-function unlock(bytes32 lockId, UnlockOperationData calldata opData) external;
-function rollbackLock(bytes32 lockId, UnlockOperationData calldata opData) external;
+function spendLock(bytes32 lockId, bytes calldata spendArgs, bytes calldata data) external;
+function cancelLock(bytes32 lockId, bytes calldata cancelArgs, bytes calldata data) external;
 ```
 
-The above generic interface is expected to work with all privacy tokens that have implemented a lock interface to allow settle and rollback flow to be deterministically driven by a lock ID.
+Token-specific structs (Zeto: `ZetoSpendLockArgs`; FHE: empty `spendArgs` in the reference v1) are `abi.encode`’d by clients before calling. Legacy names `unlock` and `rollbackLock` map to `spendLock` and `cancelLock`.
 
 ### Settlement orchestration contract
 
@@ -197,7 +167,7 @@ The `initialize()` function is the one-time opportunity to put the different leg
 
 This design assumes that necessary negotiations and orchestrations will happen ahead of time, with each of the trading participants having verified the setup of the locks in the relevant token contracts. A trusted party can then call the `initialize()` function on behalf of all the trading participants. The trusted party can either be a smart contract or an externally owned account (EOA) held by a mutually trusted entity.
 
-After the `initialize()` call, each of the trading parties must be given an opportunity to review the initialized operations by checking that the `lockId` and the `approver` are correct, and that the corresponding locks on the respective token contracts are securing the expected amount of assets for the trade. Then each of the trading parties should signal their approval to the escrow contract. Only after all approvals are given should the `settle()` function be allowed to execute.
+After the `initialize()` call, each of the trading parties must review the initialized `Operation` entries: `lockId`, `approver`, and the pre-encoded `spendArgs` bytes that the Atom will pass to `spendLock` at settlement. Then they signal their approval, typically by calling `delegateLock` on the token to install the settlement contract as the current *spender* for that `lockId`. Only after the agreed approvals (this repository’s `Atom` uses approvers as the counterparties) should the `settle()` function be executed.
 
 On the other hand, any of the trading parties should be allowed to call `cancel()` on the orchestrator contract, before all the approvals are given. This prevents a malicious party from holding up the settlement by staying silent.
 
@@ -350,4 +320,4 @@ sequenceDiagram
 
 To guard against this case:
 
-- The `cancel()` function of the escrow contract must be implemented to catch reverts in the downstream calls to the token contracts' `rollbackLock()` function. Otherwise, a malicious participant can implement a lock that reverts on rollback and prevents other participants from getting back their locked assets.
+- The `cancel()` function of the escrow contract wraps downstream `cancelLock()` calls in `try`/`catch` (see `Atom.sol`) so a malicious lock implementation cannot block refunds for the other leg.

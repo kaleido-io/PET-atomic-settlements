@@ -16,7 +16,7 @@
 
 import { ethers, fhevm, network } from "hardhat";
 import { FhevmType } from '@fhevm/hardhat-plugin';
-import { ContractTransactionReceipt, ZeroHash, ZeroAddress, lock } from "ethers";
+import { ContractTransactionReceipt, ZeroHash } from "ethers";
 import { expect } from "chai";
 import { Merkletree, InMemoryDB, str2Bytes } from "@iden3/js-merkletree";
 import { loadCircuit } from "zeto-js";
@@ -37,11 +37,21 @@ import {
   newNullifier,
   doMint,
   ZERO_UTXO,
-  parseUTXOEvents
 } from "zeto-solidity/test/lib/utils";
 import { deployZeto } from "zeto-solidity/test/lib/deploy";
-import { loadProvingKeys, calculateUnlockHash } from "zeto-solidity/test/utils";
+import { loadProvingKeys, calculateSpendHash } from "zeto-solidity/test/utils";
 import { parseLockEvents } from "./lib/utils";
+import {
+  randomTxId,
+  encodeZetoCreateLockArgs,
+  encodeZetoUpdateLockArgs,
+  encodeZetoDelegateLockArgs,
+  encodeZetoSpendLockArgs,
+  encodeErc20CreateLockArgs,
+  readLockIdFromZetoLockCreated,
+  readSpentUtxoOutputs,
+  readZetoLockCancelledOutputs,
+} from "./lib/zetoLockableE2E";
 
 describe("DvP flows between privacy tokens implementing the locking interface", function () {
   // users interacting with each other in the DvP transactions
@@ -144,19 +154,12 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
 
     describe("Trade proposal setup by Alice and Bob", function () {
       let saltForProposedPaymentForBob: bigint;
-      let lockUTXOEvent: any;
-      let unlockPrepareEvent: any;
-      let lockERC20Event: any;
+      let lockERC20State: any;
       let paymentForBob: UTXO;
       let changeForAlice: UTXO;
 
-      it("Alice locks a UTXO for the trade with Bob", async function () {
-        // generate random lockId for Alice's lock
-        lockIdAlice = "0x" + randomBytes(32).toString("hex");
-        // Alice consumes a "Confidential UTXO" token and locks it
+      it("Alice creates a UTXO lock (ILockableCapability.createLock) for the trade with Bob", async function () {
         const nullifier1 = newNullifier(payment1, Alice);
-        // The locked UTXO is owned by Alice, who is responsible for generating the proof
-        // and giving it to the Atom contract as the delegate.
         lockedUtxo = newUTXO(payment1.value!, Alice);
         const root = await smtAlice.root();
         const proof1 = await smtAlice.generateCircomVerifierProof(
@@ -168,8 +171,6 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           proof1.siblings.map((s) => s.bigInt()),
           proof2.siblings.map((s) => s.bigInt()),
         ];
-        // generate the proof for spending the "payment1" UTXO
-        // and locking the "lockedUtxo" output UTXO
         const encodedProof = await prepareProof(
           circuit,
           provingKey,
@@ -181,137 +182,144 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           merkleProofs,
           [Alice, Alice],
         );
-
-        // Now construct the "settle" and "rollback" operations for the lock
-        const lockParameters = {
+        const createTxId = randomTxId();
+        const createArgs = encodeZetoCreateLockArgs({
+          txId: createTxId,
           inputs: [nullifier1.hash],
           outputs: [],
           lockedOutputs: [lockedUtxo.hash],
-        };
-        // set the delegate to Alice herself initially, this way Alice
-        // can recover the locked tokens if Bob fails to fulfill his obligations.
-        const delegate = Alice.ethAddress;
-        const tx = await zkUTXO.connect(Alice.signer).lock(
-          lockIdAlice,
-          lockParameters,
-          encodeToBytes(root.bigInt(), encodedProof), // encode the root and proof together
-          "0x",
-        );
+          proof: encodeToBytes(root.bigInt(), encodedProof),
+        });
+        const predicted = await zkUTXO.connect(Alice.signer).computeLockId(createArgs);
+        const tx = await zkUTXO
+          .connect(Alice.signer)
+          .createLock(createArgs, ZeroHash, ZeroHash, "0x");
         const result: ContractTransactionReceipt | null = await tx.wait();
-        const events = parseUTXOEvents(zkUTXO, result!);
-        lockUTXOEvent = events[0];
+        lockIdAlice = readLockIdFromZetoLockCreated(zkUTXO, result!);
+        expect(lockIdAlice).to.equal(predicted);
       });
 
-      it("prepare unlock to demonstrate the intended output UTXO for Bob", async function () {
+      it("Alice updateLock sets the off-chain verifiable spend commitment (cancels not bound here)", async function () {
         paymentForBob = newUTXO(75, Bob);
         saltForProposedPaymentForBob = paymentForBob.salt! as bigint;
         changeForAlice = newUTXO(25, Alice);
-
-        const unlockHash = calculateUnlockHash(
+        const spendH = calculateSpendHash(
           [lockedUtxo],
           [],
           [paymentForBob, changeForAlice],
           "0x",
         );
-
-        const tx = await zkUTXO.connect(Alice.signer).prepareUnlock(
-          lockIdAlice,
-          { unlockHash },
-          "0x",
-        );
-        const result: ContractTransactionReceipt | null = await tx.wait();
-        const events = parseUTXOEvents(zkUTXO, result!);
-        unlockPrepareEvent = events[0];
+        const t2 = await zkUTXO
+          .connect(Alice.signer)
+          .updateLock(
+            lockIdAlice,
+            encodeZetoUpdateLockArgs(randomTxId()),
+            spendH,
+            ZeroHash,
+            "0x",
+          );
+        await t2.wait();
+        const g = await zkUTXO.getLock(lockIdAlice);
+        expect(g.spendCommitment).to.equal(spendH);
+        expect(g.cancelCommitment).to.equal(ZeroHash);
       });
 
-      it("Bob decodes the LockCreate and UnlockPrepare event, decodes the lock operation parameters, and verifies the output UTXOs", async function () {
-        // check that the lockId in the event is the same as the lockId used in the operation for Alice's lock
-        expect(lockUTXOEvent.lockId).to.equal(lockIdAlice);
-        expect(unlockPrepareEvent.lockId).to.equal(lockIdAlice);
-        // Bob decodes the LockCreate and UnlockPrepare events to build the lock data structure
-        const lockedInputs: UTXO[] = lockUTXOEvent.lockData.inputs.map((i: any) => ({ hash: i } as UTXO));
-        const unlockHash = unlockPrepareEvent.settle.unlockHash;
-        // check that the lock will produce the output UTXO to be owned by Bob upon settlement
+      it("Bob verifies the intended UTXO outputs with respect to the on-chain spend commitment", async function () {
         const expectedUTXOForProposedPaymentForBob: UTXO = newUTXO(75, Bob, saltForProposedPaymentForBob);
-        // Alice also needs to send Bob the other outputs involved in the prepared unlock operation,
-        // which in this case is just the change output back to Alice
         const outputs: UTXO[] = [expectedUTXOForProposedPaymentForBob, changeForAlice];
-        const calculatedUnlockHash = calculateUnlockHash(
-          lockedInputs,
+        const expectedSpend = calculateSpendHash(
+          [lockedUtxo],
           [],
           outputs,
           "0x",
         );
-        expect(calculatedUnlockHash).to.equal(unlockHash);
+        const g = await zkUTXO.getLock(lockIdAlice);
+        expect(g.spendCommitment).to.equal(expectedSpend);
       });
 
-      it("Bob agrees with the trade proposal by Alice, and locks 50 of his \"Lockable Confidential ERC20\" tokens", async function () {
-        // generate random lockId for Bob's lock
-        lockIdBob = "0x" + randomBytes(32).toString("hex");
-        // Bob locks 50 of his FHE ERC20 tokens, designating the Atom contract as the delegate
+      it("Bob creates a lock (createLock) of 50 confidential ERC-20 units to Alice as receiver", async function () {
         const encryptedInput = await fhevm
           .createEncryptedInput(confidentialERC20.target, Bob.ethAddress)
           .add64(50)
           .encrypt();
-
-        // set the delegate to Bob himself initially, this way Bob
-        // can recover the locked tokens if Alice fails to fulfill her obligations.
-        const delegate = Bob.ethAddress;
-        const tx1 = await confidentialERC20.connect(Bob.signer).lock(lockIdBob, Alice.ethAddress, delegate, encryptedInput.handles[0], encryptedInput.inputProof, "0x");
-        const result: ContractTransactionReceipt | null = await tx1.wait();
-
-        lockERC20Event = parseLockEvents(confidentialERC20, result!)[0];
+        const fheTxId = randomTxId();
+        const fheCreate = encodeErc20CreateLockArgs({
+          txId: fheTxId,
+          receiver: Alice.ethAddress,
+          amount: encryptedInput.handles[0],
+          amountProof: encryptedInput.inputProof,
+        });
+        const predicted = await confidentialERC20.connect(Bob.signer).computeLockId(fheCreate);
+        const t1 = await confidentialERC20.connect(Bob.signer).createLock(fheCreate, ZeroHash, ZeroHash, "0x");
+        const result: ContractTransactionReceipt | null = await t1.wait();
+        lockIdBob = predicted;
+        const created = result!.logs
+          .map((l) => {
+            try {
+              return confidentialERC20.interface.parseLog(l as any);
+            } catch {
+              return null;
+            }
+          })
+          .find((e) => e && e.name === "LockCreated");
+        const state = result!.logs
+          .map((l) => {
+            try {
+              return confidentialERC20.interface.parseLog(l as any);
+            } catch {
+              return null;
+            }
+          })
+          .find((e) => e && e.name === "ConfidentialErc20LockState");
+        expect(created, "LockCreated not found").to.be.ok;
+        expect(created!.args.lockId).to.equal(lockIdBob);
+        expect(state, "ConfidentialErc20LockState not found in transaction logs").to.be.ok;
+        lockERC20State = state;
       });
 
-      it("Alice verifies the trade setup by Bob, by checking the lock events emitted by the Confidential ERC20 contract", async function () {
-        // check that the lockId in the event is the same as the lockId used in the operation for Bob's lock
-        expect(lockERC20Event.lockId).to.equal(lockIdBob);
-        // check the encrypted amount in the LockCreated event
-        const lockedAmount = lockERC20Event.amount;
-        const decryptedLockedAmount = await fhevm.userDecryptEuint(FhevmType.euint64, lockedAmount, confidentialERC20.target, Alice.signer);
+      it("Alice verifies the trade setup by reading FHE lock state and {ConfidentialErc20LockState}", async function () {
+        expect(lockERC20State?.args?.lockId).to.equal(lockIdBob);
+        const lockedAmount = lockERC20State.args.amount;
+        const decryptedLockedAmount = await fhevm.userDecryptEuint(
+          FhevmType.euint64,
+          lockedAmount,
+          confidentialERC20.target,
+          Alice.signer,
+        );
         expect(decryptedLockedAmount).to.equal(50);
-        // check that the lock is owned by Bob
-        expect(lockERC20Event.owner).to.equal(Bob.ethAddress);
-        // check that the lock designates Alice as the receiver
-        expect(lockERC20Event.receiver).to.equal(Alice.ethAddress);
+        const li = await confidentialERC20.getLock(lockIdBob);
+        expect(li.owner).to.equal(Bob.ethAddress);
+        expect(lockERC20State?.args?.receiver).to.equal(Alice.ethAddress);
       });
 
-      it("Alice and Bob agree on an Atom contract instance to use for the trade, and initialize the lock operations", async function () {
+      it("Alice and Bob agree on an Atom instance and initialize the lock operations (spendArgs for Zeto spendLock)", async function () {
         const encodedProofForSettle = await prepareProofLocked(
           circuitForLocked,
           provingKeyForLocked,
           Alice,
           [lockedUtxo, ZERO_UTXO],
           [paymentForBob, changeForAlice],
-          [Bob, Alice]
+          [Bob, Alice],
         );
-        const settleOperation = {
-          outputs: [paymentForBob.hash, changeForAlice.hash],
+        const zetoSpend = encodeZetoSpendLockArgs({
+          txId: randomTxId(),
           lockedOutputs: [],
+          outputs: [paymentForBob.hash, changeForAlice.hash],
           proof: encodeToBytesLocked(encodedProofForSettle),
           data: "0x",
-        }
-
+        });
         const operationAlice = {
           lockableContract: zkUTXO,
           approver: Alice.ethAddress,
           lockId: lockIdAlice,
-          opData: settleOperation,
+          spendArgs: zetoSpend,
         };
         const operationBob = {
           lockableContract: confidentialERC20,
           approver: Bob.ethAddress,
           lockId: lockIdBob,
-          opData: {
-            outputs: [],
-            lockedOutputs: [],
-            proof: "0x",
-            data: "0x",
-          },
+          spendArgs: "0x",
         };
-        // deploy the Atom contract and initialize it with the operations
-        // at this point, the lock IDs are fixed by the Atom contract, 
-        // but they are not yet locked in the token contracts
         const tx = await atomFactory.connect(Alice.signer).create([operationAlice, operationBob]);
         const result: ContractTransactionReceipt | null = await tx.wait();
         const atomDeployedEvent = parseLockEvents(atomFactory, result!)[0];
@@ -322,12 +330,18 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
     });
 
     describe("Trade approvals", function () {
-      it("Bob approves the trade by delegating the lock operation to the Atom contract", async function () {
-        const tx = await confidentialERC20.connect(Bob.signer).delegateLock(lockIdBob, atomInstance.target, "0x");
+      it("Bob approves the trade by delegating the lock to the Atom contract (delegateLock)", async function () {
+        const d = encodeZetoDelegateLockArgs(randomTxId());
+        const tx = await confidentialERC20
+          .connect(Bob.signer)
+          .delegateLock(lockIdBob, d, atomInstance.target, "0x");
         await tx.wait();
       });
-      it("Alice approves the trade by delegating the lock operation to the Atom contract", async function () {
-        const tx = await zkUTXO.connect(Alice.signer).delegateLock(lockIdAlice, atomInstance.target, "0x");
+      it("Alice approves the trade by delegating the UTXO lock to the Atom contract (delegateLock)", async function () {
+        const d = encodeZetoDelegateLockArgs(randomTxId());
+        const tx = await zkUTXO
+          .connect(Alice.signer)
+          .delegateLock(lockIdAlice, d, atomInstance.target, "0x");
         await tx.wait();
       });
     });
@@ -382,11 +396,13 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
       });
 
       it("Alice updates her local merkle tree with the new UTXOs received from the trade", async function () {
-        const events = parseUTXOEvents(zkUTXO, settleTxResult!);
-        const settledEvent = events[0];
-        expect(settledEvent).to.not.be.null;
-        expect(settledEvent?.lockId).to.equal(lockIdAlice);
-        for (const outHash of settledEvent?.settle.outputs) {
+        const outHashes = readSpentUtxoOutputs(
+          zkUTXO,
+          settleTxResult!,
+          lockIdAlice
+        );
+        expect(outHashes.length).to.be.greaterThan(0);
+        for (const outHash of outHashes) {
           await smtAlice.add(outHash, outHash);
         }
       });
@@ -394,17 +410,10 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
   });
 
   describe("Failed trade flow - counterparty fails to fulfill obligations during setup phase", function () {
-    // Alice's payment UTXOs to be minted and transferred
     let payment1: UTXO;
-
     let lockedUtxo: UTXO;
     let lockIdAlice: string;
     let refundForAlice: UTXO;
-
-    before(async function () {
-      // generate random lockId for Alice's lock
-      lockIdAlice = "0x" + randomBytes(32).toString("hex");
-    });
 
     it("mint to Alice some \"Confidential UTXO\" tokens", async function () {
       payment1 = newUTXO(100, Alice);
@@ -424,11 +433,8 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
     });
 
     describe("Trade setup by Alice", function () {
-      it("Alice locks a UTXO for the trade with Bob", async function () {
-        // Alice consumes a Zeto token and locks it
+      it("Alice creates a UTXO lock (createLock) for the trade with Bob", async function () {
         const nullifier1 = newNullifier(payment1, Alice);
-        // The locked UTXO is owned by Alice, who is responsible for generating the proof
-        // and giving it to the Atom contract as the delegate.
         lockedUtxo = newUTXO(payment1.value!, Alice);
         const root = await smtAlice.root();
         const proof1 = await smtAlice.generateCircomVerifierProof(
@@ -451,19 +457,16 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           merkleProofs,
           [Alice, Alice],
         );
-
-        const lockParameters = {
+        const cArgs = encodeZetoCreateLockArgs({
+          txId: randomTxId(),
           inputs: [nullifier1.hash],
           outputs: [],
           lockedOutputs: [lockedUtxo.hash],
-        };
-        const tx = await zkUTXO.connect(Alice.signer).lock(
-          lockIdAlice,
-          lockParameters,
-          encodeToBytes(root.bigInt(), encodedProof), // encode the root and proof together
-          "0x",
-        );
-        await tx.wait();
+          proof: encodeToBytes(root.bigInt(), encodedProof),
+        });
+        const tx = await zkUTXO.connect(Alice.signer).createLock(cArgs, ZeroHash, ZeroHash, "0x");
+        const w = await tx.wait();
+        lockIdAlice = readLockIdFromZetoLockCreated(zkUTXO, w!);
       });
 
       it("Bob fails to fulfill the trade obligations", function () {
@@ -487,26 +490,21 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           [refundForAlice, ZERO_UTXO],
           [Alice, Alice],
         );
-        const refundOperation = {
-          outputs: [refundForAlice.hash],
+        // Alice cancels the trade: {cancelLock} with a ZK proof for the refund UTXO
+        const cancelArgs = encodeZetoSpendLockArgs({
+          txId: randomTxId(),
           lockedOutputs: [],
+          outputs: [refundForAlice.hash, ZERO_UTXO.hash],
           proof: encodeToBytesLocked(encodedProofForRollback),
           data: "0x",
-        }
-
-        // Alice cancels the trade
-        // and the locked UTXO is returned to Alice
-        const tx = await zkUTXO.connect(Alice.signer).rollbackLock(lockIdAlice, refundOperation);
+        });
+        const tx = await zkUTXO.connect(Alice.signer).cancelLock(lockIdAlice, cancelArgs, "0x");
         cancelTxResult = await tx.wait();
       });
 
       it("Alice verifies the trade cancellation by checking the UTXO events emitted by the Zeto contract", async function () {
-        // verify the UTXO events, showing the locked UTXO was returned to Alice
-        const events = parseUTXOEvents(zkUTXO, cancelTxResult!);
-        const rollbackEvent = events[0];
-        expect(rollbackEvent).to.not.be.null;
-        expect(rollbackEvent?.lockId).to.equal(lockIdAlice);
-        expect(rollbackEvent?.rollback.outputs[0]).to.equal(refundForAlice.hash);
+        const outs = readZetoLockCancelledOutputs(zkUTXO, cancelTxResult!);
+        expect(BigInt(outs[0])).to.equal(refundForAlice.hash);
         await smtAlice.add(refundForAlice.hash, refundForAlice.hash);
       });
     });
@@ -525,9 +523,7 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
       const afFactory = await ethers.getContractFactory("AtomFactory");
       atomFactory = await afFactory.connect(Alice.signer).deploy();
       logger.debug("AtomFactory contract instance deployed at", atomFactory.target);
-      // generate random lockId for Alice's lock
-      lockIdAlice = "0x" + randomBytes(32).toString("hex");
-      // generate random lockId for Bob's lock
+      // No FHE lock when Bob is supposed to fail: random id that will not exist
       lockIdBob = "0x" + randomBytes(32).toString("hex");
     });
 
@@ -548,12 +544,9 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
       expect(root.string()).to.equal(onchainRoot.toString());
     });
 
-    describe("Trade setup by Alice and Bob (Bob's settle operation will fail)", function () {
-      it("Alice locks a UTXO for the trade with Bob", async function () {
-        // Alice consumes a Zeto token and locks it
+    describe("Trade setup by Alice and Bob (Bob's leg has no on-chain FHE lock)", function () {
+      it("Alice creates a UTXO lock (createLock) for the trade with Bob", async function () {
         const nullifier1 = newNullifier(payment1, Alice);
-        // The locked UTXO is owned by Alice, who is responsible for generating the proof
-        // and giving it to the Atom contract as the delegate.
         lockedUtxo = newUTXO(payment1.value!, Alice);
         const root = await smtAlice.root();
         const proof1 = await smtAlice.generateCircomVerifierProof(
@@ -576,43 +569,37 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           merkleProofs,
           [Alice, Alice],
         );
-
-        const lockParameters = {
+        const cArgs = encodeZetoCreateLockArgs({
+          txId: randomTxId(),
           inputs: [nullifier1.hash],
           outputs: [],
           lockedOutputs: [lockedUtxo.hash],
-        };
-        const tx = await zkUTXO.connect(Alice.signer).lock(
-          lockIdAlice,
-          lockParameters,
-          encodeToBytes(root.bigInt(), encodedProof), // encode the root and proof together
-          "0x",
-        );
-        await tx.wait();
+          proof: encodeToBytes(root.bigInt(), encodedProof),
+        });
+        const tx = await zkUTXO.connect(Alice.signer).createLock(cArgs, ZeroHash, ZeroHash, "0x");
+        const w = await tx.wait();
+        lockIdAlice = readLockIdFromZetoLockCreated(zkUTXO, w!);
       });
 
-      it("initialize the Atom contract instance for the trade", async function () {
+      it("initialize the Atom with placeholder spendArgs (Zeto leg) and a dummy Bob lockId", async function () {
+        const zetoSpendPlaceholder = encodeZetoSpendLockArgs({
+          txId: randomTxId(),
+          lockedOutputs: [],
+          outputs: [],
+          proof: "0x",
+          data: "0x",
+        });
         const operationAlice = {
           lockableContract: zkUTXO,
           approver: Alice.ethAddress,
           lockId: lockIdAlice,
-          opData: {
-            outputs: [],
-            lockedOutputs: [],
-            proof: "0x",
-            data: "0x",
-          },
+          spendArgs: zetoSpendPlaceholder,
         };
         const operationBob = {
           lockableContract: confidentialERC20,
           approver: Bob.ethAddress,
           lockId: lockIdBob,
-          opData: {
-            outputs: [],
-            lockedOutputs: [],
-            proof: "0x",
-            data: "0x",
-          },
+          spendArgs: "0x",
         };
         const tx = await atomFactory.connect(Alice.signer).create([operationAlice, operationBob]);
         const result: ContractTransactionReceipt | null = await tx.wait();
@@ -622,13 +609,22 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
         logger.debug("Atom contract instance deployed at", atomInstance.target);
       });
 
-      it("Alice and Bob approve the trade by delegating the lock operations to the Atom contract", async function () {
-        let tx = await zkUTXO.connect(Alice.signer).delegateLock(lockIdAlice, atomInstance.target, "0x");
+      it("Alice approves the trade by delegating the UTXO lock to the Atom", async function () {
+        const tx = await zkUTXO
+          .connect(Alice.signer)
+          .delegateLock(
+            lockIdAlice,
+            encodeZetoDelegateLockArgs(randomTxId()),
+            atomInstance.target,
+            "0x",
+          );
         await tx.wait();
       });
 
-      it("attempt to settle the trade via the Atom contract, which will fail due to Bob's operation", async function () {
-        await expect(atomInstance.connect(Alice.signer).settle()).eventually.rejectedWith("UnlockNotPrepared");
+      it("attempting to settle the Atom reverts (invalid spend / or Bob {LockNotActive})", async function () {
+        await expect(
+          atomInstance.connect(Alice.signer).settle(),
+        ).to.be.reverted;
       });
     });
 
@@ -648,16 +644,16 @@ describe("DvP flows between privacy tokens implementing the locking interface", 
           [refundForAlice, ZERO_UTXO],
           [Alice, Alice],
         );
-        const refundOperation = {
-          outputs: [refundForAlice.hash],
+        const cancelArgs = encodeZetoSpendLockArgs({
+          txId: randomTxId(),
           lockedOutputs: [],
+          outputs: [refundForAlice.hash, ZERO_UTXO.hash],
           proof: encodeToBytesLocked(encodedProofForRollback),
           data: "0x",
-        }
-
-        // Alice cancels the trade
-        // and the locked UTXO is returned to Alice
-        const tx = await atomInstance.connect(Alice.signer).cancel(lockIdAlice, refundOperation);
+        });
+        const tx = await atomInstance
+          .connect(Alice.signer)
+          .cancel(lockIdAlice, cancelArgs);
         cancelTxResult = await tx.wait();
       });
 

@@ -3,10 +3,10 @@ pragma solidity ^0.8.20;
 
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {ILockable} from "zeto-solidity/contracts/lib/interfaces/ILockable.sol";
+import {ILockableCapability} from "zeto-solidity/contracts/lib/interfaces/ILockableCapability.sol";
 
 // Atom is a contract that orchestrates atomic settlements of multiple legs of a trade,
-// among privacy preserving tokens that implement the ILockable interface.
+// among privacy preserving tokens that implement the ILockableCapability interface.
 contract Atom is Ownable {
     using Address for address;
 
@@ -17,14 +17,14 @@ contract Atom is Ownable {
     }
 
     struct Operation {
-        ILockable lockableContract;
+        ILockableCapability lockableContract;
         // the account that can approve the operation before called by settle or cancel.
         // in most cases, this is the counterparty in the trade that owns the locked asset.
         address approver;
         // the id of the lock set up in the lockable contract
         bytes32 lockId;
-        // the detailed operation data
-        ILockable.UnlockOperationData opData;
+        // ABI-encoded spend payload for {ILockableCapability.spendLock} (Zeto: {ZetoSpendLockArgs}).
+        bytes spendArgs;
     }
 
     event AtomStatusChanged(Status status);
@@ -99,9 +99,10 @@ contract Atom is Ownable {
         status = Status.Executed;
 
         for (uint256 i = 0; i < _operations.length; i++) {
-            _operations[i].lockableContract.unlock(
+            _operations[i].lockableContract.spendLock(
                 _operations[i].lockId,
-                _operations[i].opData
+                _operations[i].spendArgs,
+                new bytes(0)
             );
             emit OperationSettled(i, _operations[i].lockId, "");
         }
@@ -114,7 +115,7 @@ contract Atom is Ownable {
      */
     function cancel(
         bytes32 lockId,
-        ILockable.UnlockOperationData memory opData
+        bytes calldata cancelArgs
     ) external onlyCounterparty {
         require(
             status == Status.Pending,
@@ -124,7 +125,13 @@ contract Atom is Ownable {
             if (_operations[i].lockId != lockId) {
                 continue;
             }
-            try _operations[i].lockableContract.rollbackLock(lockId, opData) {
+            try
+                _operations[i].lockableContract.cancelLock(
+                    lockId,
+                    cancelArgs,
+                    new bytes(0)
+                )
+            {
                 emit OperationRolledBack(i, lockId, "");
             } catch (bytes memory reason) {
                 emit OperationRollbackFailed(i, lockId, reason);
